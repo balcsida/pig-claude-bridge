@@ -5,6 +5,7 @@ package live
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,7 +13,11 @@ import (
 )
 
 // Verifies the bridge clears its shared session after a /new (port of tests/int-session-new.mjs), and
-// that PiG's replacement of the extension runner on new_session takes the parked Claude Code with it.
+// that a Claude Code recorded before new_session does not outlive PiG's replacement of the extension runner.
+// Limit: between turns this bridge keeps no Claude Code alive (as the TypeScript bridge), so the snapshot
+// normally holds only the old runner and the orphan check passes vacuously; the log line below says which.
+// It can only catch a claude that was in the snapshot. The leak-on-replacement class is covered by the
+// shutdown test of part 25c.
 func TestIntSessionNew(t *testing.T) {
 	const timeout = 180 * time.Second
 	h := New(t, Options{
@@ -79,13 +84,24 @@ func TestIntSessionNew(t *testing.T) {
 		fail("bridge took %s path after /new — expected clean-start.\n       sharedSession should be cleared by the session_start:new handler.", syncResults[0])
 	}
 
-	// PiG replaces the extension runner and its processes on new_session (rpc.md, D70): no Claude Code that
-	// was parked before the command may outlive the replacement. A survivor means the bridge leaks it.
+	// PiG replaces the extension runner and its processes on new_session (rpc.md, D70): no claude recorded
+	// before the command may outlive the replacement. A survivor means the bridge leaks it.
+	isClaude := func(command string) bool {
+		f := strings.Fields(command)
+		return len(f) > 0 && filepath.Base(f[0]) == "claude"
+	}
+	snapshotClaudes := 0
+	for _, command := range parked {
+		if isClaude(command) {
+			snapshotClaudes++
+		}
+	}
+	t.Logf("claude processes in the pre-/new snapshot: %d (0 means the orphan check below is vacuous)", snapshotClaudes)
 	var leaked []string
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		leaked = leaked[:0]
 		for pid, command := range parked {
-			if now, ok := ProcessCommand(pid); ok && now == command && strings.Contains(strings.ToLower(command), "claude") {
+			if now, ok := ProcessCommand(pid); ok && now == command && isClaude(command) {
 				leaked = append(leaked, fmt.Sprintf("pid %d: %s", pid, command))
 			}
 		}

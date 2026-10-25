@@ -131,10 +131,14 @@ Adaptations from the TypeScript suite:
 Run on 2026-10-25 (one work dir, `scripts/live/work/gate`): pig `0.5.3+1.4.0.74f46864`, claude `2.1.310 (Claude Code)`,
 go `1.27.3 darwin/arm64`; Node was not run by this task (PiG runs it for its own extensions).
 
+The table was assembled by hand from the individual runs above; `run-all.sh` was not run (its row builder is proven
+by `run-all.sh --selftest` without quota).
+
 | step | result | seconds |
 |---|---|---|
 | `verify.sh` (validate-only, int-smoke, idle footprint) | ok | 45 |
-| `int-smoke.sh` | PASS: 5 passed, 1 skipped (AskClaude: alternative provider unset) | 37 |
+| `int-smoke.sh` | PASS: 5 passed | 37 |
+| `int-smoke.sh: tool: AskClaude responds` | SKIP (CLAUDE_BRIDGE_TESTING_ALT_PROVIDER unset) | 0 |
 | `int-multi-turn.sh` | PASS: 5 of 5 | 76 |
 | `int-cache.sh` | PASS: 7 turns, hit 97-99% from turn 2, clean-start 1 / reuse 4 / rebuild 0 | 37 |
 | `int-cache-git.sh` | PASS: 12 turns, commit inside turn 6, hit% 98 -> 98 -> 99, clean-start 1 / reuse 7 / rebuild 0 | 73 |
@@ -144,6 +148,17 @@ go `1.27.3 darwin/arm64`; Node was not run by this task (PiG runs it for its own
 Orphan check (`TestIntSessionNew`): between turns pig's only descendant was the extension runner; no `claude` process
 was alive at that point, so the check passed without a survivor but also without a parked `claude` to observe (it
 needs a snapshot taken mid-turn to be non-vacuous). The pre-`/new` runner was gone after the next prompt.
+
+Fix-round re-run (`TestIntSessionNew` only; it now logs the claude count in the snapshot and matches `claude` by the
+executable's basename). The orphan check is vacuous here, as the log line says:
+
+```
+go test -race -tags live -count=1 -run TestIntSessionNew -v ./...
+    int-session-new_test.go:99: claude processes in the pre-/new snapshot: 0 (0 means the orphan check below is vacuous)
+    int-session-new_test.go:114: pre-/new descendant pid 80147 still alive: false (.../runner)
+--- PASS: TestIntSessionNew (23.77s)
+ok  	github.com/balcsida/pig-claude-bridge/tests/live	25.050s
+```
 
 ## Footprint *(Task 25)*
 
