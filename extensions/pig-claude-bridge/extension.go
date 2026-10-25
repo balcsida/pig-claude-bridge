@@ -170,7 +170,9 @@ func Extension() *sdk.Extension {
 	forward("turn_start", func(h bridge.Host, _ map[string]any) { b.OnTurnStart(h) })
 	forward("session_before_compact", func(h bridge.Host, _ map[string]any) { b.OnSessionBeforeCompact(h) })
 	forward("session_before_tree", func(h bridge.Host, _ map[string]any) { b.OnSessionBeforeTree(h) })
-	forward("session_compact", func(h bridge.Host, _ map[string]any) { b.OnSessionCompact(h) })
+	forward("session_compact", func(h bridge.Host, data map[string]any) {
+		b.OnSessionCompact(h, fmt.Sprintf("session_compact:%v:willRetry=%v", data["reason"], data["willRetry"]))
+	})
 	forward("session_tree", func(h bridge.Host, _ map[string]any) { b.OnSessionTree(h) })
 	forward("session_shutdown", func(h bridge.Host, _ map[string]any) { b.OnSessionShutdown(h) })
 	return ext

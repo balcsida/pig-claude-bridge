@@ -179,10 +179,11 @@ func (b *Bridge) recordHostPrompt(host Host, source string) {
 // OnSessionCompact and OnSessionTree: pi mutated its messages out from under the
 // bridge. The next sync must REBUILD rather than REUSE, and a query parked at a tool
 // boundary is discarded when its tool result arrives (the mark arms it). The
-// rewrite belongs to the compacting session; others stay untouched.
-func (b *Bridge) OnSessionCompact(host Host) {
+// rewrite belongs to the compacting session; others stay untouched. tag is the
+// debug-log prefix, session_compact:<reason>:willRetry=<bool> as the event reports it.
+func (b *Bridge) OnSessionCompact(host Host, tag string) {
 	defer b.recoverHandler("session_compact")
-	b.historyRewrittenBy(host, "session_compact")
+	b.historyRewrittenBy(host, tag)
 }
 
 func (b *Bridge) OnSessionTree(host Host) {

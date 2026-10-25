@@ -111,7 +111,7 @@ func TestIsolatedSummaryCwd(t *testing.T) {
 					}
 				}
 				if operation == "compaction" {
-					h.b.OnSessionCompact(host)
+					h.b.OnSessionCompact(host, "session_compact:manual:willRetry=false")
 				} else {
 					h.b.forgetSummarySession(id)
 				}

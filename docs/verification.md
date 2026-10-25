@@ -178,7 +178,7 @@ per test; SKIP rows are separate. The temp agent dirs of the compaction tests ca
 | `TestIntCompactSecondCompact` | PASS | 52.9 |
 | `TestIntBranchSummary` | PASS | 19.9 |
 | `TestIntCompactAutoThreshold` | PASS (one threshold compaction, tokensBefore 14953) | 57.0 |
-| `TestIntCompactMidturnRebuild` | FAIL: marker `session_compact:threshold` absent (Finding 1) | 63.4 |
+| `TestIntCompactMidturnRebuild` | PASS (after Finding 1 fix: tokens 81303 before the compaction, 12710 after) | 64.9 |
 | `TestIntSessionRebuild` | not ported (Finding 2) | - |
 | deadlock check over the run's logs (10 debug logs) | no bridge deadlock warnings | 0 |
 
@@ -189,12 +189,11 @@ SKIP rows:
 | `TestIntSessionResume` | SKIP (CLAUDE_BRIDGE_TESTING_ALT_PROVIDER / CLAUDE_BRIDGE_TESTING_ALT_MODEL unset) |
 
 Findings:
-1. Marker parity, `TestIntCompactMidturnRebuild`: the TypeScript regex `/session_compact:threshold/` does not match the
-   Go bridge, which logs `session_compact: marking needsRebuild on session cce08fb4` (no reason after the colon).
-   The behaviour the test guards holds in the log: the parked query was discarded
-   (`provider: history rewritten under a parked query — discarded it, rebuilding from current history`), the turn finished
-   with `midturn-ok`, and prompt tokens fell from 81766 to 12659 (under half); no `MCP handlers still waiting`. The regex
-   is kept verbatim, so the test stays red until the Go text carries the reason or the controller decides otherwise.
+1. Marker parity, `TestIntCompactMidturnRebuild` (fixed): the Go forward passed the bare `session_compact` and dropped
+   the event's `reason` and `willRetry`; the TypeScript tags `session_compact:${reason}:willRetry=${willRetry}`
+   (`session_tree` is bare there too, so it was already right). The bridge now logs
+   `session_compact:threshold:willRetry=false: marking needsRebuild on session <id8>`; the regex stayed verbatim and the
+   test passed on its one rerun.
 2. `int-session-rebuild.mjs` is not an RPC test: it drives `cc-session-io` and the Agent SDK `query` directly. It is
    not ported pending a decision (see the task report).
 

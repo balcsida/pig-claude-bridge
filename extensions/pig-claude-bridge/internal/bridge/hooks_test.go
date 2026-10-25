@@ -470,7 +470,7 @@ func TestBridgeLeavesCompactionAndBranchSummaryOwnershipToPiAndOtherExtensions(t
 				finalOf(t, stream)
 			}
 			if o.completed {
-				h.b.OnSessionCompact(host)
+				h.b.OnSessionCompact(host, "session_compact:manual:willRetry=false")
 			}
 			// Every summary is one isolated process: no session persisted, no tools, closed.
 			spawns := h.spawns()
@@ -519,7 +519,10 @@ func TestEventHooks(t *testing.T) {
 		}
 	})
 	t.Run("session_compact and session_tree arm the rebuild for the rewriting session only", func(t *testing.T) {
-		for _, fire := range []func(*Bridge, Host){(*Bridge).OnSessionCompact, (*Bridge).OnSessionTree} {
+		for _, fire := range []func(*Bridge, Host){
+			func(b *Bridge, h Host) { b.OnSessionCompact(h, "session_compact:threshold:willRetry=false") },
+			(*Bridge).OnSessionTree,
+		} {
 			b, _, _ := newTestBridge(t, false)
 			b.setSessionStateFor("pi-a", &SessionState{SessionID: "cc-a"})
 			b.setSessionStateFor("pi-b", &SessionState{SessionID: "cc-b"})
@@ -533,10 +536,18 @@ func TestEventHooks(t *testing.T) {
 			}
 		}
 	})
+	t.Run("session_compact logs the reason and retry state in its tag", func(t *testing.T) {
+		b, _, agentDir := newTestBridge(t, true)
+		b.setSessionStateFor("pi-a", &SessionState{SessionID: "cc-a-12345678"})
+		b.OnSessionCompact(&fakeHost{sessionID: "pi-a"}, "session_compact:threshold:willRetry=false")
+		if log := readDebugLog(t, agentDir); !strings.Contains(log, "session_compact:threshold:willRetry=false: marking needsRebuild on session cc-a-123") {
+			t.Fatalf("log:\n%s", log)
+		}
+	})
 	t.Run("session_compact arms a parked query so its tool result is discarded", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		q := b.addContext("pi-a")
-		b.OnSessionCompact(&fakeHost{sessionID: "pi-a"})
+		b.OnSessionCompact(&fakeHost{sessionID: "pi-a"}, "session_compact:threshold:willRetry=false")
 		if !b.isStale(q) {
 			t.Fatal("the parked query must be armed")
 		}
@@ -578,7 +589,7 @@ func TestEventHooks(t *testing.T) {
 		b.OnTurnStart(host)
 		b.OnSessionBeforeCompact(host)
 		b.OnSessionBeforeTree(host)
-		b.OnSessionCompact(host)
+		b.OnSessionCompact(host, "session_compact")
 		b.OnSessionTree(host)
 		b.OnSessionShutdown(host)
 		if log := readDebugLog(t, agentDir); strings.Count(log, "recovered from panic: boom") < 7 {
