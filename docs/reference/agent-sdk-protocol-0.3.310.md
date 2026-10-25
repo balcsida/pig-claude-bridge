@@ -281,7 +281,7 @@ Bridge imports (`src/index.ts:7`): `createSession, deleteSession, openSession, r
 ---
 ## 6. Bridge's concrete invocation (reference config) `src/index.ts:2039-2096`
 `query({prompt: asyncIterable, options:{env, tools:[], permissionMode:"bypassPermissions", includePartialMessages:true, systemPrompt:{type:"preset",append?}, extraArgs:{model, "replay-user-messages":null, "strict-mcp-config":null?, "thinking-display":"summarized"?}, effort?, mcpServers:{<sdk server>}, resume?, pathToClaudeCodeExecutable?}})`.
-=> argv ~ `--output-format stream-json --verbose --input-format stream-json [--effort=E] --tools= [--mcp-config ..? (sdk servers excluded)] --permission-mode=bypassPermissions --include-partial-messages [--resume=ID] --model=M --replay-user-messages [--strict-mcp-config] [--thinking-display=summarized]` *(the `--tools=` empty-array form is inferred from `de.join(",")`)*.
+=> argv (recorded from SDK 0.3.310 by Task 14, `internal/ccproto/testdata/sdk-argv-snapshot.json`, which supersedes the earlier estimate here): `--output-format stream-json --verbose --input-format stream-json --effort=high --tools= --permission-mode=bypassPermissions --include-partial-messages [--resume=ID] --model <M> --replay-user-messages --strict-mcp-config --thinking-display summarized --settings <json>`; no `--mcp-config` (sdk servers are announced in `initialize`), `sdkMcpServers` omitted from `initialize` when there are none, no automatic `--debug-file` *(the `--tools=` empty-array form is inferred from `de.join(",")`)*.
 
 ## 7. Open items (NOT FOUND / not traced)
 Live-checked against claude 2.1.310 by spike S2 (see the design spec, section 9):
