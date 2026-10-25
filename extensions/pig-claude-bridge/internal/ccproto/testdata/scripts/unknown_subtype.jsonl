@@ -1,0 +1,5 @@
+{"type":"control_request","request_id":"u1","request":{"subtype":"bogus"}}
+{"type":"control_request","request_id":"u2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}}
+{"type":"control_request","request_id":"u3","request":{"subtype":"hook_callback","callback_id":"hook_9","input":{}}}
+{"type":"control_request","request_id":"u4","request":{"subtype":"request_user_dialog","dialog_kind":"x","payload":{}}}
+{"type":"control_request","request_id":"u5","request":{"subtype":"bogus"}}

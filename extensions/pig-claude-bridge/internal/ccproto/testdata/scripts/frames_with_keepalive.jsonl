@@ -1,0 +1,7 @@
+{"type":"keep_alive"}
+{"type":"transcript_mirror","note":"skipped"}
+{"type":"assistant","n":1}
+this line is not json
+{"type":"system","subtype":"status","n":2}
+{"type":"keep_alive","startup_mark":"x"}
+{"type":"result","n":3}
