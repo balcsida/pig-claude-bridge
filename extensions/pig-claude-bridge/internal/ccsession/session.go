@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -164,6 +165,9 @@ func Open(sessionID, projectPath, claudeDir string) (*Session, error) {
 
 // Delete removes the session file and its companion directory.
 func Delete(sessionID, projectPath, claudeDir string) error {
+	if sessionID == "" || strings.ContainsAny(sessionID, `/\`) {
+		return fmt.Errorf("ccsession: delete: invalid session id %q", sessionID)
+	}
 	path := SessionPath(claudeDir, projectPath, sessionID)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("ccsession: delete: %w", err)
@@ -176,7 +180,7 @@ func Delete(sessionID, projectPath, claudeDir string) error {
 
 // AddUserMessage adds a user message; content is a string or a []Block.
 func (s *Session) AddUserMessage(content any) error {
-	if blocks, ok := content.([]Block); ok && len(blocks) == 0 {
+	if v := reflect.ValueOf(content); v.Kind() == reflect.Slice && v.Len() == 0 {
 		return errors.New("ccsession: AddUserMessage: content array is empty; Anthropic rejects empty message content")
 	}
 	return s.appendRecord(func(base Base) any {

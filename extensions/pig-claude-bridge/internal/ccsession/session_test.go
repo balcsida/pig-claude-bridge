@@ -159,8 +159,13 @@ func TestChainIntegrity(t *testing.T) {
 
 func TestRejectsEmptyContent(t *testing.T) {
 	s, _ := newSession(t)
-	if err := s.AddUserMessage([]Block{}); err == nil {
-		t.Fatal("empty user array accepted")
+	for name, content := range map[string]any{
+		"[]Block": []Block{}, "nil []Block": []Block(nil), "[]TextBlock": []TextBlock{},
+		"[]any": []any{}, "[]map[string]any": []map[string]any{},
+	} {
+		if err := s.AddUserMessage(content); err == nil {
+			t.Fatalf("empty user content %s accepted", name)
+		}
 	}
 	if err := s.AddAssistantMessage(nil, ""); err == nil {
 		t.Fatal("empty assistant content accepted")
@@ -268,5 +273,23 @@ func TestOpenPreservesUnknownRecordsVerbatim(t *testing.T) {
 func TestOpenMissingFileErrors(t *testing.T) {
 	if _, err := Open("nope", t.TempDir(), t.TempDir()); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestDeleteRejectsUnsafeSessionID(t *testing.T) {
+	s, claudeDir := newSession(t)
+	if err := s.AddUserMessage("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"", "../x", "a/b", `a\b`} {
+		if err := Delete(id, s.cwd, claudeDir); err == nil {
+			t.Fatalf("Delete(%q) accepted", id)
+		}
+	}
+	if _, err := os.Stat(s.Path()); err != nil {
+		t.Fatalf("session removed by rejected Delete: %v", err)
 	}
 }

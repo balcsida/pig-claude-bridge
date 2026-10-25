@@ -41,6 +41,17 @@ func TestProjectPathToHash(t *testing.T) {
 			t.Fatalf("djb2 pin mismatch: %s", want)
 		}
 	})
+	// Pins from the library: node -e 'import("<clone>/node_modules/cc-session-io/dist/index.js").then(m => console.log(m.projectPathToHash(process.argv[1])))' -- <path>
+	t.Run("negative 32-bit hash uses its absolute value", func(t *testing.T) {
+		if got, want := ProjectPathToHash("/"+strings.Repeat("b", 200)+"/proj"), "-"+strings.Repeat("b", 199)+"-ohp29v"; got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	})
+	t.Run("astral character past the cut hashes over UTF-16 units", func(t *testing.T) {
+		if got, want := ProjectPathToHash("/"+strings.Repeat("b", 205)+"\U0001F600x"), "-"+strings.Repeat("b", 199)+"-jkib26"; got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	})
 	t.Run("hash separates long paths sharing a prefix", func(t *testing.T) {
 		a := ProjectPathToHash(strings.Repeat("a", 200) + "x")
 		b := ProjectPathToHash(strings.Repeat("a", 200) + "y")
