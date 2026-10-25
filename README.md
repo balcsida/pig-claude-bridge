@@ -63,7 +63,7 @@ The extension asks PiG for both directories; nothing is hard-coded. A missing or
 ```
 
 `askClaude`:
-- `enabled`: register the AskClaude tool (default `false`). If it is unset, the startup notice below points this out once.
+- `enabled`: register the AskClaude tool (default `false`).
 - `name`: override the tool's name (default `"AskClaude"`)
 - `label`: override the label (default `"Ask Claude Code"`)
 - `description`: override the tool description
