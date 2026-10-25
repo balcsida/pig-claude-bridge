@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	fakeBin = filepath.Join(dir, "fakeclaude")
-	if out, err := exec.Command("go", "build", "-o", fakeBin, "./internal/fakeclaude").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-o", fakeBin, "./testdata/fakeclaude").CombinedOutput(); err != nil {
 		os.RemoveAll(dir)
 		panic(string(out))
 	}
