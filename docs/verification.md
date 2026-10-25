@@ -160,6 +160,44 @@ go test -race -tags live -count=1 -run TestIntSessionNew -v ./...
 ok  	github.com/balcsida/pig-claude-bridge/tests/live	25.050s
 ```
 
+### Live integration, part 2 of 3 *(Task 25b)*
+
+Session and compaction RPC tests under `tests/live/`, each run once on its own
+(`go test -race -tags live -count=1 -run 'Test<Name>$' -v ./...`) in one work dir (`scripts/live/work/25b`) on
+2026-10-25: pig `0.5.3+1.4.0.74f46864`, claude `2.1.310 (Claude Code)`, go `1.27.3 darwin/arm64`. Hand-assembled, one row
+per test; SKIP rows are separate. The temp agent dirs of the compaction tests carry `settings.json` only
+(`compaction.keepRecentTokens: 50` and so on), the project dir is a temp copy of what the original read from the repo root.
+
+| test | result | seconds |
+|---|---|---|
+| `TestIntServedWindow` | PASS (`result: served contextWindow=200000 ... registered=200000`) | 9.0 |
+| `TestIntCursorAfterTools` | PASS (no rebuild, at least one reuse) | 16.5 |
+| `TestIntCompactBaseline` | PASS | 32.9 |
+| `TestIntSessionCompact` | PASS (first post-compact sync: rebuild, preserved, same sessionId) | 32.3 |
+| `TestIntCompactSplitturn` | PASS (compact returned in 9.3 s, split-turn marker present) | 34.4 |
+| `TestIntCompactSecondCompact` | PASS | 52.9 |
+| `TestIntBranchSummary` | PASS | 19.9 |
+| `TestIntCompactAutoThreshold` | PASS (one threshold compaction, tokensBefore 14953) | 57.0 |
+| `TestIntCompactMidturnRebuild` | FAIL: marker `session_compact:threshold` absent (Finding 1) | 63.4 |
+| `TestIntSessionRebuild` | not ported (Finding 2) | - |
+| deadlock check over the run's logs (10 debug logs) | no bridge deadlock warnings | 0 |
+
+SKIP rows:
+
+| test | result |
+|---|---|
+| `TestIntSessionResume` | SKIP (CLAUDE_BRIDGE_TESTING_ALT_PROVIDER / CLAUDE_BRIDGE_TESTING_ALT_MODEL unset) |
+
+Findings:
+1. Marker parity, `TestIntCompactMidturnRebuild`: the TypeScript regex `/session_compact:threshold/` does not match the
+   Go bridge, which logs `session_compact: marking needsRebuild on session cce08fb4` (no reason after the colon).
+   The behaviour the test guards holds in the log: the parked query was discarded
+   (`provider: history rewritten under a parked query — discarded it, rebuilding from current history`), the turn finished
+   with `midturn-ok`, and prompt tokens fell from 81766 to 12659 (under half); no `MCP handlers still waiting`. The regex
+   is kept verbatim, so the test stays red until the Go text carries the reason or the controller decides otherwise.
+2. `int-session-rebuild.mjs` is not an RPC test: it drives `cc-session-io` and the Agent SDK `query` directly. It is
+   not ported pending a decision (see the task report).
+
 ## Footprint *(Task 25)*
 
 Idle `pig --mode rpc` with the extension loaded and no prompt sent (`verify.sh` step 3, `footprint -p`, physical
