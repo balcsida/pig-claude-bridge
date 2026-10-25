@@ -241,3 +241,54 @@ func TestUserMessageShape(t *testing.T) {
 		t.Fatalf("got %s", b)
 	}
 }
+
+func TestStartEarlyExitReportsExitTextAndStderr(t *testing.T) {
+	_, err := Start(context.Background(), Options{Executable: fakeBin, Cwd: t.TempDir(), Env: []string{
+		"FAKECLAUDE_EXIT_BEFORE_INIT=1", "FAKECLAUDE_EXIT_CODE=3", "FAKECLAUDE_STDERR=bad flag",
+	}}, Handlers{})
+	if err == nil || !strings.Contains(err.Error(), "Claude Code process exited with code 3. stderr: bad flag") {
+		t.Fatalf("Start error = %v", err)
+	}
+}
+
+func TestCloseReturnsWhileWriteIsBlocked(t *testing.T) {
+	shortGraces(t)
+	p, _ := startFake(t, map[string]string{"FAKECLAUDE_STOP_READING": "1"}, Handlers{})
+	wrote := make(chan error, 1)
+	go func() { wrote <- p.WriteUser(UserMessage{Content: strings.Repeat("x", 4<<20)}) }()
+	time.Sleep(100 * time.Millisecond) // the 4 MB frame cannot fit the pipe, so the write is blocked
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	select {
+	case <-p.Done():
+	default:
+		t.Fatal("child still running after Close")
+	}
+	if err := <-wrote; err == nil {
+		t.Fatal("blocked WriteUser succeeded")
+	}
+}
+
+func TestWaitIsBoundedWhenGrandchildHoldsPipes(t *testing.T) {
+	cg, dg := CloseGrace, DrainGrace
+	CloseGrace, DrainGrace = 100*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { CloseGrace, DrainGrace = cg, dg })
+	p, _ := startFake(t, map[string]string{"FAKECLAUDE_GRANDCHILD": "1"}, Handlers{})
+	_ = p.EndInput()
+	select {
+	case <-p.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done not closed while a grandchild holds the pipes")
+	}
+	select {
+	case _, ok := <-p.Frames():
+		if ok {
+			t.Fatal("unexpected frame")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Frames not closed")
+	}
+}

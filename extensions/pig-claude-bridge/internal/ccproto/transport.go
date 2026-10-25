@@ -20,6 +20,8 @@ import (
 var (
 	CloseGrace = 2 * time.Second
 	KillGrace  = 5 * time.Second
+	// DrainGrace bounds how long the pipes may stay open after the child exits (a grandchild can inherit them).
+	DrainGrace = 200 * time.Millisecond
 )
 
 const stderrTailChars = 2048
@@ -70,8 +72,11 @@ type Process struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 
-	wmu        sync.Mutex // guards stdin, stdinEnded, closed
+	wmu        sync.Mutex // serializes stdin writes; held across a blocked Write, so never taken by Close
+	fmu        sync.Mutex // guards stdinEnded, closed; never held across I/O
 	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	stderr     io.ReadCloser
 	stdinEnded bool
 	closed     bool
 
@@ -116,7 +121,7 @@ func Start(ctx context.Context, o Options, h Handlers) (*Process, error) {
 	}
 	pctx, cancel := context.WithCancel(context.Background())
 	p := &Process{
-		cmd: cmd, handlers: h, ctx: pctx, cancel: cancel, stdin: stdin,
+		cmd: cmd, handlers: h, ctx: pctx, cancel: cancel, stdin: stdin, stdout: stdout, stderr: stderr,
 		pending: map[string]chan controlResult{}, inflight: map[string]context.CancelFunc{},
 		wake: make(chan struct{}, 1), frames: make(chan json.RawMessage), abandon: make(chan struct{}),
 		stdoutDone: make(chan struct{}), stderrDone: make(chan struct{}), done: make(chan struct{}),
@@ -135,27 +140,43 @@ func Start(ctx context.Context, o Options, h Handlers) (*Process, error) {
 		err = p.write(BuildInitialize(o, id))
 	}
 	if err != nil {
-		p.abort()
-		return nil, fmt.Errorf("initialize: %w", err)
+		return nil, p.failStart(err)
 	}
 	select {
 	case r := <-ch:
 		if r.err != nil {
-			p.abort()
-			return nil, fmt.Errorf("initialize: %w", r.err)
+			return nil, p.failStart(r.err)
 		}
 		return p, nil
 	case <-ctx.Done():
-		p.abort()
-		return nil, fmt.Errorf("initialize: %w", ctx.Err())
+		return nil, p.failStart(ctx.Err())
 	}
 }
 
-// abort kills the child and waits for it to be reaped.
-func (p *Process) abort() {
-	_ = p.cmd.Process.Kill()
-	<-p.done
+// failStart tears the child down and, when it exited on its own, appends its exit text (with the stderr tail).
+func (p *Process) failStart(err error) error {
+	err = fmt.Errorf("initialize: %w", err)
+	if p.abort() {
+		return err
+	}
+	if werr := p.Wait(); werr != nil {
+		return fmt.Errorf("%w: %v", err, werr)
+	}
+	return err
+}
+
+// abort gives the child DrainGrace to exit by itself, then kills it and waits for it to be reaped.
+// It reports whether it had to kill.
+func (p *Process) abort() (killed bool) {
+	select {
+	case <-p.done:
+	case <-time.After(DrainGrace):
+		_ = p.cmd.Process.Kill()
+		killed = true
+		<-p.done
+	}
 	p.abandonFrames()
+	return killed
 }
 
 func (p *Process) abandonFrames() { p.abandonMu.Do(func() { close(p.abandon) }) }
@@ -163,10 +184,13 @@ func (p *Process) abandonFrames() { p.abandonMu.Do(func() { close(p.abandon) }) 
 func (p *Process) write(line []byte) error {
 	p.wmu.Lock()
 	defer p.wmu.Unlock()
-	if p.closed {
+	p.fmu.Lock()
+	closed, ended := p.closed, p.stdinEnded
+	p.fmu.Unlock()
+	if closed {
 		return errors.New("claude process is closed")
 	}
-	if p.stdinEnded {
+	if ended {
 		return nil // writes to ended stdin are dropped (reference 1.4)
 	}
 	if _, err := p.stdin.Write(append(line[:len(line):len(line)], '\n')); err != nil {
@@ -180,12 +204,13 @@ func (p *Process) WriteUser(msg UserMessage) error { return p.writeJSON(msg) }
 
 // EndInput closes stdin; later writes are dropped.
 func (p *Process) EndInput() error {
-	p.wmu.Lock()
-	defer p.wmu.Unlock()
-	if p.stdinEnded {
+	p.fmu.Lock()
+	ended := p.stdinEnded
+	p.stdinEnded = true
+	p.fmu.Unlock()
+	if ended {
 		return nil
 	}
-	p.stdinEnded = true
 	return p.stdin.Close()
 }
 
@@ -212,13 +237,14 @@ func (p *Process) StderrTail() string {
 
 // Close ends stdin, then escalates to SIGTERM after CloseGrace and SIGKILL after a further KillGrace.
 func (p *Process) Close(ctx context.Context) error {
-	p.wmu.Lock()
+	p.fmu.Lock()
 	p.closed = true
-	if !p.stdinEnded {
-		p.stdinEnded = true
-		_ = p.stdin.Close()
+	ended := p.stdinEnded
+	p.stdinEnded = true
+	p.fmu.Unlock()
+	if !ended {
+		_ = p.stdin.Close() // outside the lock: closing the pipe also unblocks a pending write
 	}
-	p.wmu.Unlock()
 	defer p.abandonFrames()
 
 	for _, step := range []struct {
@@ -348,34 +374,37 @@ func (p *Process) readStderr(r io.Reader) {
 	}
 }
 
-// wait reaps the child once both pipes are drained, then publishes the exit error and closes done.
+// wait reaps the child, gives the pipes DrainGrace to reach EOF (a grandchild may hold them open), then
+// publishes the exit error and closes done.
 func (p *Process) wait() {
+	state, err := p.cmd.Process.Wait()
+	timer := time.AfterFunc(DrainGrace, func() { _ = p.stdout.Close(); _ = p.stderr.Close() })
 	<-p.stdoutDone
 	<-p.stderrDone
-	err := p.cmd.Wait()
+	timer.Stop()
+	_ = p.stdin.Close()
 	p.cancel()
 	trackedMu.Lock()
 	delete(tracked, p)
 	trackedMu.Unlock()
 	p.mu.Lock()
-	p.waitErr = p.exitError(err)
+	p.waitErr = p.exitError(state, err)
 	p.mu.Unlock()
 	close(p.done)
 }
 
 // exitError renders the SDK's texts; the caller holds p.mu.
-func (p *Process) exitError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
+func (p *Process) exitError(state *os.ProcessState, err error) error {
+	if err != nil {
 		return fmt.Errorf("wait for claude: %w", err)
 	}
-	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+	if state.Success() {
+		return nil
+	}
+	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 		return fmt.Errorf("Claude Code process terminated by signal %s", signalName(ws.Signal()))
 	}
-	return fmt.Errorf("Claude Code process exited with code %d. stderr: %s", ee.ExitCode(), string(p.tail))
+	return fmt.Errorf("Claude Code process exited with code %d. stderr: %s", state.ExitCode(), string(p.tail))
 }
 
 func signalName(s syscall.Signal) string {

@@ -6,7 +6,10 @@
 // "initialize" request with id "m0" and wait for its reply before answering initialize), FAKECLAUDE_ECHO=1
 // (echo every control_response received back on stdout), FAKECLAUDE_IGNORE_TERM=1 (record and ignore SIGTERM and
 // keep running after stdin closes), FAKECLAUDE_HOLD=1 (keep running after stdin closes), FAKECLAUDE_STDERR
-// (text written to stderr at startup), FAKECLAUDE_EXIT_CODE (exit code once stdin closes).
+// (text written to stderr at startup), FAKECLAUDE_EXIT_CODE (exit code once stdin closes),
+// FAKECLAUDE_EXIT_BEFORE_INIT=1 (exit with that code right after the stderr text, before reading stdin),
+// FAKECLAUDE_STOP_READING=1 (stop reading stdin once initialize is read), FAKECLAUDE_GRANDCHILD=1 (start a
+// helper that inherits stdout and stderr and lingers for 3 s).
 package main
 
 import (
@@ -14,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -64,6 +68,23 @@ func main() {
 	if s := os.Getenv("FAKECLAUDE_STDERR"); s != "" {
 		fmt.Fprint(os.Stderr, s)
 	}
+	if os.Getenv("FAKECLAUDE_GRANDCHILD") == "child" {
+		time.Sleep(3 * time.Second)
+		return
+	}
+	if os.Getenv("FAKECLAUDE_GRANDCHILD") == "1" {
+		gc := exec.Command(os.Args[0])
+		gc.Env = append(os.Environ(), "FAKECLAUDE_GRANDCHILD=child")
+		gc.Stdout, gc.Stderr = os.Stdout, os.Stderr
+		if err := gc.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, "fakeclaude:", err)
+			os.Exit(2)
+		}
+	}
+	if os.Getenv("FAKECLAUDE_EXIT_BEFORE_INIT") == "1" {
+		code, _ := strconv.Atoi(os.Getenv("FAKECLAUDE_EXIT_CODE"))
+		os.Exit(code)
+	}
 	hold := os.Getenv("FAKECLAUDE_IGNORE_TERM") == "1" || os.Getenv("FAKECLAUDE_HOLD") == "1"
 	if os.Getenv("FAKECLAUDE_IGNORE_TERM") == "1" {
 		sig := make(chan os.Signal, 4)
@@ -110,6 +131,9 @@ func main() {
 				switch f.Request.Subtype {
 				case "initialize":
 					initReq <- f.RequestID
+					if os.Getenv("FAKECLAUDE_STOP_READING") == "1" {
+						time.Sleep(time.Hour)
+					}
 				case "interrupt":
 					respond(f.RequestID, map[string]any{"still_queued": []string{}})
 				default:
