@@ -137,7 +137,14 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 		}
 	}()
 
+	aborted := func() map[string]any {
+		out := newAssistantOutput(model)
+		out["stopReason"], out["errorMessage"] = "aborted", "Operation aborted"
+		b.debugf("compact summary: aborted")
+		return map[string]any{"type": "error", "reason": "aborted", "error": out}
+	}
 	var assistantText, finalText, errorText string
+	gotResult := false
 	frames := client.Frames()
 loop:
 	for {
@@ -145,10 +152,7 @@ loop:
 		select {
 		case <-ctx.Done():
 			killClient(client)
-			out := newAssistantOutput(model)
-			out["stopReason"], out["errorMessage"] = "aborted", "Operation aborted"
-			b.debugf("compact summary: aborted")
-			return map[string]any{"type": "error", "reason": "aborted", "error": out}
+			return aborted()
 		case err := <-writeErr:
 			return fail(err.Error())
 		case r, open := <-frames:
@@ -174,6 +178,10 @@ loop:
 				}
 			}
 		case "result":
+			if gotResult {
+				continue
+			}
+			gotResult = true
 			b.logServedContextWindow("compact summary", frame, model)
 			if failure, failed := resultErrorText(frame); failed {
 				errorText = failure
@@ -182,10 +190,13 @@ loop:
 					finalText = assistantText
 				}
 			}
-			break loop
 		}
 	}
 
+	// ctx and the closed frames can be ready together; the abort wins either way.
+	if ctx.Err() != nil {
+		return aborted()
+	}
 	text := finalText
 	if text == "" {
 		text = assistantText

@@ -174,6 +174,7 @@ func TestIsolatedStream(t *testing.T) {
 		h := newProviderHarness(t, nil)
 		h.script(func(s *spawn) {
 			s.client.emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "from assistant"}}}}, resultFrame(""))
+			s.client.exit(0, "")
 		})
 		reply := call(h, context.Background(), isolatedContext, nil)
 		if content, _ := reply["content"].([]any); len(content) != 1 || obj(content[0])["text"] != "from assistant" {
@@ -184,6 +185,7 @@ func TestIsolatedStream(t *testing.T) {
 		h := newProviderHarness(t, nil)
 		h.script(func(s *spawn) {
 			s.client.emit(map[string]any{"type": "result", "subtype": "success", "is_error": true, "result": "overloaded"})
+			s.client.exit(0, "")
 		})
 		reply := call(h, context.Background(), isolatedContext, nil)
 		if reply["stopReason"] != "error" || reply["errorMessage"] != "overloaded" {
@@ -202,6 +204,32 @@ func TestIsolatedStream(t *testing.T) {
 		h.script(func(s *spawn) { s.client.exit(1, "boom") })
 		if reply := call(h, context.Background(), isolatedContext, nil); reply["stopReason"] != "error" || !strings.Contains(str(reply["errorMessage"]), "boom") {
 			t.Fatalf("reply = %v", reply)
+		}
+	})
+	t.Run("a non-zero exit after a successful result is the stream's error", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		h.script(func(s *spawn) {
+			s.client.emit(resultFrame("fine"))
+			s.client.exit(1, "late failure")
+		})
+		events := eventsOf(t, mustStream(h.b.IsolatedStream(context.Background(), h.host, testModel, isolatedContext, nil, "summary", nil, nil)))
+		if len(events) != 1 || events[0]["type"] != "error" || !strings.Contains(str(obj(events[0]["error"])["errorMessage"]), "late failure") {
+			t.Fatalf("events = %v", events)
+		}
+	})
+	t.Run("an abort that races the end of the frames still reports aborted", func(t *testing.T) {
+		for i := 0; i < 20; i++ {
+			h := newProviderHarness(t, nil)
+			spawned := make(chan *fakeClient, 1)
+			h.script(func(s *spawn) { spawned <- s.client })
+			ctx, cancel := context.WithCancel(context.Background())
+			stream := mustStream(h.b.IsolatedStream(ctx, h.host, testModel, isolatedContext, nil, "summary", nil, nil))
+			fc := receive(t, spawned, "the spawn")
+			cancel()
+			fc.exit(0, "")
+			if reply := finalOf(t, stream); reply["stopReason"] != "aborted" || reply["errorMessage"] != "Operation aborted" {
+				t.Fatalf("reply = %v", reply)
+			}
 		}
 	})
 	t.Run("a failed spawn is an error", func(t *testing.T) {
