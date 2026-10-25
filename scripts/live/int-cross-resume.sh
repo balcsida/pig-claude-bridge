@@ -20,7 +20,7 @@ trap 'kill_descendants; exit_check; [ -z "${CC_PROJECT_DIR:-}" ] || rm -rf "$CC_
 
 check() { # check <description> <command...>
   local desc="$1"; shift
-  if "$@"; then echo "PASS: $desc"; else echo "FAIL: $desc"; FAIL=$((FAIL + 1)); fi
+  if "$@" >/dev/null; then echo "PASS: $desc"; else echo "FAIL: $desc"; FAIL=$((FAIL + 1)); fi
 }
 
 # Claude Code's directory for this project: every non-alphanumeric character of the resolved path becomes "-".
@@ -34,6 +34,8 @@ SESSION="$WORK/cross-resume-session.jsonl"
 } > "$SESSION"
 echo "Session file: $SESSION ($(wc -l < "$SESSION") lines)"
 
+# A rerun in the same work dir must not read the previous run's lines.
+: > "$DEBUG_LOG"
 OUT="$LOGDIR/cross-resume.ndjson"
 echo "Resuming with pig --session..."
 timeout "$TIMEOUT" pig -ne -e "$ROOT" --model "claude-bridge/claude-haiku-4-5" --session "$SESSION" --mode json \

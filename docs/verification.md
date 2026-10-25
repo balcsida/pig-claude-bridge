@@ -209,8 +209,7 @@ Findings:
 The remaining integration tests, the cross-resume script and this results section. Each test ran once on its own
 (`go test -race -tags live -count=1 -run '^Test<Name>$' -v ./...`) in one work dir (`scripts/live/work/25c`) on 2026-10-25.
 
-Versions: pig `0.5.3+1.4.0.74f46864`, claude `2.1.310 (Claude Code)`, go `1.27.3 darwin/arm64`; node was not run by this
-task (PiG runs it for its own extensions and for the npm source of the subagent test).
+Versions: pig `0.5.3+1.4.0.74f46864`, claude `2.1.310 (Claude Code)`, go `1.27.3 darwin/arm64`; node `v26.12.1`.
 
 | item | result | seconds |
 |---|---|---|
@@ -221,7 +220,7 @@ task (PiG runs it for its own extensions and for the npm source of the subagent 
 | `TestIntShutdownKillsCcSigterm` | PASS (pig exited, no `claude` survivor) | 8.4 |
 | `TestIntShutdownKillsCcStdinClose` | PASS (pig exited on end of input, no `claude` survivor) | 8.3 |
 | `TestIntSubagentRpivCodebaseLocator` | PASS (foreground and background Agent runs, reentrant marker seen, no stuck-handler signature) | 53.9 |
-| `int-cross-resume.sh` | PASS: 7 checks (rerun once after a check fix, see Cross-resume) | 10 |
+| `int-cross-resume.sh` | PASS: 7 checks (fix-round rerun, see Cross-resume; the earlier runs read an untruncated debug log) | 10 |
 | deadlock check over the run's logs (6 debug logs) | no bridge deadlock warnings | 0 |
 
 SKIP rows:
@@ -290,7 +289,23 @@ conversation? Reply with just that text.", can only be answered from the recorde
 The first run failed the chain check as first written (each `parentUuid` equal to the previous record's `uuid`): Claude Code
 appends `queue-operation`, `attachment` and similar records of its own after the rebuilt ones, which break a strict
 previous-record chain. The rebuilt records themselves chain strictly (checked by hand on that run's file). The check was
-changed to the referential form above and the script rerun once; all seven checks passed on the rerun (10 s).
+changed to the referential form above and the script rerun once. That rerun shared its work dir with the first run and
+the script did not truncate the debug log, so its `path=rebuild` check could have read the first run's line. Fix round: the
+script now truncates `$DEBUG_LOG` before the `pig` call and the check reads only this run's log; rerun once more, all seven
+checks passed (10 s). Output of that rerun:
+
+```
+Answer: t0:128
+PASS: the answer quotes the first message of the recorded history (t0:128)
+First sync: syncResult: path=rebuild
+PASS: the first turn rebuilt a Claude Code session (syncResult: path=rebuild)
+PASS: the rebuilt Claude Code session file exists under the project hash
+Records: 324, first type: user
+PASS: the first record is a user record
+PASS: the session holds at least the 310 recorded messages plus the new turn (>= 311 records)
+PASS: the records chain in order (first record is a root, every parentUuid names an earlier record)
+Failed: 0
+```
 
 | direction | status |
 |---|---|
