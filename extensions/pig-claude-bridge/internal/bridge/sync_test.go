@@ -320,3 +320,66 @@ func TestConcurrentSessionsDoNotShareState(t *testing.T) {
 		t.Fatal("sessions share a Claude Code session")
 	}
 }
+
+// A mark landing between a sync's snapshot and its final store must survive: the
+// rebuilt file reflects the pre-rewrite history.
+func TestRebuildKeepsMarkSetSinceSnapshot(t *testing.T) {
+	rebuilt := SessionState{SessionID: id1, Cursor: 2}
+	t.Run("rewrite mark", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
+		snapshot := b.sessionStateFor("pi-1")
+		b.markRebuildForSession("pi-1", "session_compact")
+		b.storeRebuilt("pi-1", snapshot, rebuilt)
+		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild || st.ForceRotate {
+			t.Fatalf("state = %+v", st)
+		}
+	})
+	t.Run("abort mark", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
+		snapshot := b.sessionStateFor("pi-1")
+		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true, ForceRotate: true})
+		b.storeRebuilt("pi-1", snapshot, rebuilt)
+		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild || !st.ForceRotate {
+			t.Fatalf("state = %+v", st)
+		}
+	})
+	t.Run("no mark since", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true, ForceRotate: true})
+		b.storeRebuilt("pi-1", b.sessionStateFor("pi-1"), rebuilt)
+		if st := b.sessionStateFor("pi-1"); st.NeedsRebuild || st.ForceRotate {
+			t.Fatalf("flags must clear: %+v", st)
+		}
+	})
+}
+
+// Marks racing syncs on one key, and two syncs on the shared "(none)" key, must
+// neither race (-race) nor corrupt the session file.
+func TestSyncsAndMarksOnOneKeySerialise(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	cwd := t.TempDir()
+	msgs := []map[string]any{user("Hi"), say("Hello."), user("Next")}
+	var wg sync.WaitGroup
+	for g := 0; g < 3; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 30; i++ {
+				if _, err := b.syncSharedSession(nil, "", msgs, nil, cwd, ""); err != nil {
+					t.Error(err)
+					return
+				}
+				if g == 0 {
+					b.markRebuildForSession("", "session_compact")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	st := b.sessionStateFor("")
+	if got := recordTypes(t, st.SessionID, cwd); fmt.Sprint(got) != "[user assistant]" {
+		t.Fatalf("file = %v", got)
+	}
+}

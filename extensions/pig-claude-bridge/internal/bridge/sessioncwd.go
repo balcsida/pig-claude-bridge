@@ -31,18 +31,27 @@ func (b *Bridge) sessionCwdFor(piSessionID string) string {
 
 // rememberSummarySession marks the pi session whose compaction summary runs next.
 // The TypeScript keys this by AbortSignal identity, which Go lacks (divergence D7):
-// the most recent pending summary wins and summarySessionFor consumes it.
+// the most recent remembered summary wins until forgetSummarySession.
 func (b *Bridge) rememberSummarySession(piSessionID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.pendingSummary = piSessionID
 }
 
-// summarySessionFor returns and clears the pending summary session.
+// summarySessionFor returns the pending summary session without clearing it: pi
+// makes several summary calls per operation (compaction makes two).
 func (b *Bridge) summarySessionFor() (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	id := b.pendingSummary
-	b.pendingSummary = ""
-	return id, id != ""
+	return b.pendingSummary, b.pendingSummary != ""
+}
+
+// forgetSummarySession ends piSessionID's summary operation. It does nothing when
+// another session's summary has been remembered since.
+func (b *Bridge) forgetSummarySession(piSessionID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pendingSummary == piSessionID {
+		b.pendingSummary = ""
+	}
 }

@@ -1,5 +1,7 @@
 package bridge
 
+import "sync"
+
 // SessionState mirrors the Claude Code conversation one pi session's turns run on.
 // It is a value: the Bridge stores and returns copies, so a caller can never race
 // the map by holding one.
@@ -17,6 +19,10 @@ type SessionState struct {
 	// process may still flush a late record to the old file, so REBUILD takes a
 	// fresh id and leaves the old file alone instead of racing it.
 	ForceRotate bool
+
+	// markSeq counts markRebuildForSession calls, so a sync can tell a mark that
+	// landed during its file I/O from the one it is consuming.
+	markSeq uint64
 }
 
 // queryContext is the part of a live query that history-rewrite marking touches.
@@ -66,6 +72,7 @@ func (b *Bridge) markRebuildForSession(piSessionID, event string) {
 	state, ok := b.sessions[key]
 	if ok {
 		state.NeedsRebuild = true
+		state.markSeq++
 		b.sessions[key] = state
 	}
 	if piSessionID != "" {
@@ -100,4 +107,51 @@ func short(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// lockSync serialises syncs on one session key and returns the unlock func.
+func (b *Bridge) lockSync(piSessionID string) (unlock func()) {
+	key := sessionKey(piSessionID)
+	b.mu.Lock()
+	m, ok := b.syncLocks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		b.syncLocks[key] = m
+	}
+	b.mu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
+// advanceCursor updates the live mirror, so a mark set meanwhile survives.
+func (b *Bridge) advanceCursor(piSessionID string, cursor int, cwd string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	key := sessionKey(piSessionID)
+	if cur, ok := b.sessions[key]; ok {
+		cur.Cursor, cur.Cwd = cursor, cwd
+		b.sessions[key] = cur
+	}
+}
+
+// storeRebuilt stores the rebuilt mirror, keeping any rewrite mark or forced
+// rotation that landed after snapshot was read: the new file predates that rewrite.
+func (b *Bridge) storeRebuilt(piSessionID string, snapshot *SessionState, rebuilt SessionState) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	key := sessionKey(piSessionID)
+	if cur, ok := b.sessions[key]; ok {
+		var was SessionState
+		if snapshot != nil {
+			was = *snapshot
+		}
+		if cur.markSeq != was.markSeq {
+			rebuilt.NeedsRebuild = true
+		}
+		if cur.ForceRotate && !was.ForceRotate {
+			rebuilt.NeedsRebuild, rebuilt.ForceRotate = true, true
+		}
+		rebuilt.markSeq = cur.markSeq
+	}
+	b.sessions[key] = rebuilt
 }

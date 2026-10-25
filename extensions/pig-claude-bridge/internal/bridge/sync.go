@@ -52,6 +52,10 @@ func (b *Bridge) syncSharedSession(host Host, piSessionID string, messages []map
 	}
 	history := convert.NonSystemMessages(all)
 	priors := history[:turnStart(history)]
+	// One sync per key at a time: the file I/O below must not interleave, and the
+	// final store must know which marks landed since this snapshot.
+	unlock := b.lockSync(piSessionID)
+	defer unlock()
 	shared := b.sessionStateFor(piSessionID)
 
 	if shared != nil && !shared.NeedsRebuild && len(priors) >= shared.Cursor {
@@ -60,9 +64,7 @@ func (b *Bridge) syncSharedSession(host Host, piSessionID string, messages []map
 		if len(missed) == 0 || trailingAssistantOnly {
 			res := SyncResult{Action: ActionReuse, SessionID: shared.SessionID, Cursor: shared.Cursor, Priors: len(priors)}
 			if trailingAssistantOnly {
-				next := *shared
-				next.Cursor, next.Cwd = len(priors), cwd
-				b.setSessionStateFor(piSessionID, &next)
+				b.advanceCursor(piSessionID, len(priors), cwd)
 				res.Action, res.Cursor = ActionAppend, len(priors)
 				b.debugf("Case 3: advanced cursor past trailing assistant, resuming session %s, cursor=%d", short(shared.SessionID), len(priors))
 			} else {
@@ -116,7 +118,7 @@ func (b *Bridge) syncSharedSession(host Host, piSessionID string, messages []map
 	}
 	// Records, not messages: carried attachments are records too.
 	b.verifyWrittenSession(host, session.Path(), session.ID(), len(session.Records()), cwd)
-	b.setSessionStateFor(piSessionID, &SessionState{SessionID: session.ID(), Cursor: len(priors), Cwd: cwd, PiSessionID: piSessionID})
+	b.storeRebuilt(piSessionID, shared, SessionState{SessionID: session.ID(), Cursor: len(priors), Cwd: cwd, PiSessionID: piSessionID})
 
 	id, n := short(session.ID()), len(session.Records())
 	res := SyncResult{Action: ActionRebuild, SessionID: session.ID(), Cursor: len(priors), Priors: len(priors)}

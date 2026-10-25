@@ -35,33 +35,39 @@ func TestSessionCwd(t *testing.T) {
 
 // TestSummaryCwd ports unit-summary-cwd.mjs. The TypeScript drives two real pi
 // sessions compacting concurrently; Go keys the pending summary by recency
-// instead of AbortSignal (D7), so this pins the remember/consume contract and
+// instead of AbortSignal (D7), so this pins the remember/forget contract and
 // that the remembered session resolves to its own cwd.
 func TestSummaryCwd(t *testing.T) {
 	b, _, _ := newTestBridge(t, false)
 	b.rememberSessionCwd("one", "/work/one")
 	b.rememberSessionCwd("two", "/work/two")
 
-	t.Run("concurrent summaries each use their owning session's cwd", func(t *testing.T) {
+	t.Run("both summary calls of one operation use the owning session's cwd", func(t *testing.T) {
 		b.rememberSummarySession("one")
-		id, ok := b.summarySessionFor()
-		if !ok || b.sessionCwdFor(id) != "/work/one" {
-			t.Fatalf("first summary = %q %v", id, ok)
+		for call := 1; call <= 2; call++ {
+			id, ok := b.summarySessionFor()
+			if !ok || b.sessionCwdFor(id) != "/work/one" {
+				t.Fatalf("call %d = %q %v", call, id, ok)
+			}
 		}
 		b.rememberSummarySession("two")
-		id, ok = b.summarySessionFor()
-		if !ok || b.sessionCwdFor(id) != "/work/two" {
-			t.Fatalf("second summary = %q %v", id, ok)
+		if id, ok := b.summarySessionFor(); !ok || b.sessionCwdFor(id) != "/work/two" {
+			t.Fatalf("next operation = %q %v", id, ok)
 		}
 	})
-	t.Run("a summary session is consumed once", func(t *testing.T) {
+	t.Run("forgetSummarySession ends only its own operation", func(t *testing.T) {
 		b.rememberSummarySession("one")
-		b.summarySessionFor()
+		b.rememberSummarySession("two")
+		b.forgetSummarySession("one")
+		if id, ok := b.summarySessionFor(); !ok || id != "two" {
+			t.Fatalf("stale forget cleared %q %v", id, ok)
+		}
+		b.forgetSummarySession("two")
 		if id, ok := b.summarySessionFor(); ok {
-			t.Fatalf("second read returned %q", id)
+			t.Fatalf("still pending: %q", id)
 		}
 	})
-	t.Run("the most recent pending summary wins", func(t *testing.T) {
+	t.Run("the most recent remembered summary wins", func(t *testing.T) {
 		b.rememberSummarySession("one")
 		b.rememberSummarySession("two")
 		if id, _ := b.summarySessionFor(); id != "two" {

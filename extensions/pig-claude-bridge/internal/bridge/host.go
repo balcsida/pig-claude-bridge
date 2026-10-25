@@ -44,6 +44,8 @@ type Bridge struct {
 	mu sync.Mutex
 	// sessions holds one CC-conversation mirror per pi session, keyed by sessionKey.
 	sessions map[string]SessionState
+	// syncLocks serialise syncSharedSession per session key.
+	syncLocks map[string]*sync.Mutex
 	// historyRewritten holds real pi session ids only, never the "(none)" key.
 	historyRewritten map[string]struct{}
 	// contexts are the live queries armStaleContexts marks.
@@ -64,6 +66,7 @@ func New(d Deps) *Bridge {
 	return &Bridge{
 		deps:             d,
 		sessions:         map[string]SessionState{},
+		syncLocks:        map[string]*sync.Mutex{},
 		historyRewritten: map[string]struct{}{},
 		contexts:         map[*queryContext]struct{}{},
 		cwds:             map[string]string{},
