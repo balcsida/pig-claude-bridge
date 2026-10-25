@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccproto"
-	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/mcptools"
 )
 
 // fakeClient is a ccproto.Client driven by a script: emit queues frames, exit
@@ -177,6 +176,12 @@ func (f *fakeClient) writes() []ccproto.UserMessage {
 	return append([]ccproto.UserMessage(nil), f.written...)
 }
 
+// mcpHandler is what answers a tools/call: the MCP server itself, or the spawn
+// handlers a provider call handed to Claude Code.
+type mcpHandler interface {
+	Handle(ctx context.Context, msg json.RawMessage) (json.RawMessage, bool, error)
+}
+
 // toolReply is the JSON-RPC answer to a tools/call.
 type toolReply struct {
 	Text    string
@@ -186,7 +191,7 @@ type toolReply struct {
 
 // callTool sends a tools/call for name with Claude Code's tool use id through server,
 // and returns the channel the reply arrives on.
-func callTool(ctx context.Context, server *mcptools.Server, name, toolUseID string) <-chan toolReply {
+func callTool(ctx context.Context, server mcpHandler, name, toolUseID string) <-chan toolReply {
 	out := make(chan toolReply, 1)
 	go func() {
 		msg, _ := json.Marshal(map[string]any{

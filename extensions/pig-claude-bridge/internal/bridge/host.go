@@ -11,6 +11,8 @@ import (
 
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccproto"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/config"
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/models"
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/promptcapture"
 )
 
 // Host is what the bridge needs from PiG for one request. It is passed into every
@@ -58,6 +60,21 @@ type Bridge struct {
 	cwds map[string]string
 	// pendingSummary is the pi session whose compaction summary is about to run.
 	pendingSummary string
+	// pendingNotices are the startup notices not yet shown.
+	pendingNotices []string
+	// lastPromptOptions are the pi prompt options stashed at before_agent_start for the
+	// later boundaries to reuse.
+	lastPromptOptions *promptOptions
+	// executable is the resolved Claude Code binary; "" until the first query resolves it.
+	executable string
+
+	// captures is the prompt-capture registry, guarded by its own mutex.
+	captures    *promptcapture.Captures
+	longContext models.LongContextSettings
+
+	// queries tracks the goroutines a provider call starts, so a shutdown or a test
+	// can wait for them.
+	queries sync.WaitGroup
 
 	nextCLIDebugSeq atomic.Int64
 }
@@ -67,7 +84,7 @@ func New(d Deps) *Bridge {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
-	return &Bridge{
+	b := &Bridge{
 		deps:             d,
 		sessions:         map[string]SessionState{},
 		syncLocks:        map[string]*sync.Mutex{},
@@ -75,5 +92,9 @@ func New(d Deps) *Bridge {
 		contexts:         map[*QueryContext]struct{}{},
 		abandoned:        map[ccproto.Client]struct{}{},
 		cwds:             map[string]string{},
+		longContext:      longContextSettings(d.Config.Provider),
 	}
+	b.captures = promptcapture.NewCaptures(0, b.debugCaptureMiss)
+	b.queueStartupNotices()
+	return b
 }

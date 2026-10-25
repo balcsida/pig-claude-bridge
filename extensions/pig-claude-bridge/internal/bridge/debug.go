@@ -29,10 +29,11 @@ func (b *Bridge) debugf(format string, args ...any) {
 }
 
 // cliDebugOptions returns the file the Claude CLI should write its own debug log
-// to, or "" when debugging is off (the SDK adds no automatic debug file).
-func (b *Bridge) cliDebugOptions(tag string) (debugFile string) {
+// to and the handler that forwards its stderr lines into the bridge log, or "" and
+// nil when debugging is off (the SDK adds no automatic debug file).
+func (b *Bridge) cliDebugOptions(tag string) (debugFile string, onStderr func(chunk string)) {
 	if !b.deps.Debug {
-		return ""
+		return "", nil
 	}
 	seq := b.nextCLIDebugSeq.Add(1)
 	ts := strings.NewReplacer(":", "-", ".", "-").Replace(b.deps.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
@@ -40,7 +41,13 @@ func (b *Bridge) cliDebugOptions(tag string) (debugFile string) {
 	_ = os.MkdirAll(dir, 0o755)
 	debugFile = filepath.Join(dir, ts+"-"+tag+"-"+strconv.FormatInt(seq, 10)+".log")
 	b.debugf("cli-debug: %s #%d → %s", tag, seq, debugFile)
-	return debugFile
+	return debugFile, func(chunk string) {
+		for _, line := range strings.Split(strings.ReplaceAll(chunk, "\r\n", "\n"), "\n") {
+			if line != "" {
+				b.debugf("[cli-stderr %s#%d] %s", tag, seq, line)
+			}
+		}
+	}
 }
 
 // diagDump writes an unconditional diagnostic entry for "should never happen" paths.
