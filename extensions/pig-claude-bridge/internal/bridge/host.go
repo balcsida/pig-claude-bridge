@@ -50,6 +50,10 @@ type Bridge struct {
 	historyRewritten map[string]struct{}
 	// contexts are the live queries armStaleContexts marks.
 	contexts map[*QueryContext]struct{}
+	// abandoned are the queries discardRewrittenQuery killed; their completion must
+	// not touch the session or the stream their replacement owns. consumeQuery
+	// removes its client's entry when it exits.
+	abandoned map[ccproto.Client]struct{}
 	// cwds maps a pi session id to its working directory.
 	cwds map[string]string
 	// pendingSummary is the pi session whose compaction summary is about to run.
@@ -69,6 +73,7 @@ func New(d Deps) *Bridge {
 		syncLocks:        map[string]*sync.Mutex{},
 		historyRewritten: map[string]struct{}{},
 		contexts:         map[*QueryContext]struct{}{},
+		abandoned:        map[ccproto.Client]struct{}{},
 		cwds:             map[string]string{},
 	}
 }

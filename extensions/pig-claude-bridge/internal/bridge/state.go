@@ -81,6 +81,26 @@ func (b *Bridge) markRebuildForSession(piSessionID, event string) {
 	b.debugf("%s: marking needsRebuild on session %s", event, short(state.SessionID))
 }
 
+// markSessionNeedsRebuild flags piSessionID's mirror for REBUILD, and with rotate
+// for a fresh session id too (a CC subprocess was just killed and may still flush
+// to the old file). Unlike markRebuildForSession it arms no parked query. The mark
+// bumps markSeq so a sync in flight keeps it. A session with no mirror has nothing
+// to mark; false says so.
+func (b *Bridge) markSessionNeedsRebuild(piSessionID string, rotate bool) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	key := sessionKey(piSessionID)
+	state, ok := b.sessions[key]
+	if !ok {
+		return false
+	}
+	state.NeedsRebuild = true
+	state.ForceRotate = state.ForceRotate || rotate
+	state.markSeq++
+	b.sessions[key] = state
+	return true
+}
+
 // armStaleContexts copies each armed session's mark onto the parked queries built from it.
 func (b *Bridge) armStaleContexts() {
 	b.mu.Lock()
