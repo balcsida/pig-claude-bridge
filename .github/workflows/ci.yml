@@ -20,6 +20,17 @@ jobs:
       - name: Vet and test
         working-directory: extensions/pig-claude-bridge
         run: go vet ./... && go test -race ./...
+      - name: Compile the live-tagged contract tests
+        working-directory: extensions/pig-claude-bridge
+        run: go vet -tags live ./internal/ccproto/
+      - name: Compile the live integration module
+        working-directory: tests/live
+        run: test -z "$(gofmt -l .)" && go vet -tags live ./...
+      - name: Self-test the live scripts (offline)
+        run: |
+          for f in scripts/live/*.sh; do bash -n "$f"; done
+          scripts/live/run-all.sh --selftest
+          bash -c 'source scripts/live/lib.sh && check_deadlock_logs --selftest'
       - uses: actions/setup-node@v4
         with:
           node-version: 22
