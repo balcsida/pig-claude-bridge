@@ -95,7 +95,61 @@ ok  	github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal
 
 ## Live integration *(Task 25)*
 
+Part 1 of 3 (Task 25a): the harnesses, the four shell scripts, the quick gate and one RPC test. Parts 25b/25c add the
+remaining RPC tests. Everything below spends real Claude Code quota and is run by hand, never in CI.
+
+Layout: `scripts/live/{lib.sh,verify.sh,run-all.sh,int-smoke.sh,int-multi-turn.sh,int-cache.sh,int-cache-git.sh}` and
+`tests/live/` (its own zero-dependency Go module, every file behind `//go:build live`).
+
+Environment contract (`lib.sh` and `tests/live/harness.go` agree): one work directory per run
+(`CLAUDE_BRIDGE_TEST_WORK_DIR`, default `scripts/live/work/<timestamp>`), logs in `CLAUDE_BRIDGE_TEST_LOG_DIR`
+(default `<work>/logs`); fresh `PIG_HOME`/`PIG_CODING_AGENT_DIR` under the work dir with settings
+`{"defaultProvider":"claude-bridge","defaultModel":"claude-haiku-4-5"}`; `PI_CODING_AGENT_DIR` and `PIG_USE_PI_DIRS`
+unset; `-e <repo>` on every `pig` call; real `HOME` (Claude Code's login); `CLAUDE_BRIDGE_DEBUG=1` with a per-test
+`CLAUDE_BRIDGE_DEBUG_PATH`. The alternative provider comes only from `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER` /
+`CLAUDE_BRIDGE_TESTING_ALT_MODEL`; no `.env*` file is read. When they are unset the AskClaude check prints
+`SKIP (CLAUDE_BRIDGE_TESTING_ALT_PROVIDER unset)` and counts as skipped. AskClaude is enabled through the agent-dir
+`claude-bridge.json` (`{"askClaude":{"enabled":true}}`): PiG's project config dir name is host-decided, so this is the
+stable equivalent of the TypeScript smoke's project `.pi/claude-bridge.json`.
+
+How to run: `scripts/live/verify.sh` (quick gate), `scripts/live/int-*.sh`, `cd tests/live && go test -race -tags live
+-count=1 -v ./...`, or `scripts/live/run-all.sh` for everything plus a results table. Scripts fail on a process that
+outlives pig (identified by the work dir in its environment); the Go harness records pig's descendants before stopping
+it and fails the test on any survivor.
+
+Adaptations from the TypeScript suite:
+- `pi` is `pig`; `-e "$DIR"` is `-e "$ROOT"`. The `jq` paths are unchanged: PiG's `--mode json` records have the same
+  `.message.role/provider/model`, `.assistantMessageEvent`, `.message.usage` and `tool_execution_start.args` shapes.
+- The multi-turn and cache scripts read `package.json`, `README.md`, `tsconfig.json` and `LICENSE` from their working
+  directory; this repo has no README or tsconfig and its package is `pig-claude-bridge`, so `lib.sh` writes a fixture
+  project (`<work>/project`, name `pi-claude-bridge`, version 4.7.2, target ES2022, this repo's LICENSE) and runs there.
+  Prompts and assertions are verbatim; `EXPECTED_VERSION` is read from the fixture.
+- The deadlock regex drops the `[id]` segment of the Go debug line: `^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[^]]+\] (BUG:|WARNING: [0-9]+ MCP handlers still waiting)`,
+  with `check_deadlock_logs --selftest` (run first by `run-all.sh`).
+- `TestIntSessionNew` ports `int-session-new.mjs` with its markers unchanged and adds an orphan check after `new_session`.
+
+Run on 2026-10-25 (one work dir, `scripts/live/work/gate`): pig `0.5.3+1.4.0.74f46864`, claude `2.1.310 (Claude Code)`,
+go `1.27.3 darwin/arm64`; Node was not run by this task (PiG runs it for its own extensions).
+
+| step | result | seconds |
+|---|---|---|
+| `verify.sh` (validate-only, int-smoke, idle footprint) | ok | 45 |
+| `int-smoke.sh` | PASS: 5 passed, 1 skipped (AskClaude: alternative provider unset) | 37 |
+| `int-multi-turn.sh` | PASS: 5 of 5 | 76 |
+| `int-cache.sh` | PASS: 7 turns, hit 97-99% from turn 2, clean-start 1 / reuse 4 / rebuild 0 | 37 |
+| `int-cache-git.sh` | PASS: 12 turns, commit inside turn 6, hit% 98 -> 98 -> 99, clean-start 1 / reuse 7 / rebuild 0 | 73 |
+| `TestIntSessionNew` | PASS (clearing marker seen, first post-`/new` syncResult `clean-start`) | 22 |
+| deadlock check over the run's logs | no bridge deadlock warnings | 0 |
+
+Orphan check (`TestIntSessionNew`): between turns pig's only descendant was the extension runner; no `claude` process
+was alive at that point, so the check passed without a survivor but also without a parked `claude` to observe (it
+needs a snapshot taken mid-turn to be non-vacuous). The pre-`/new` runner was gone after the next prompt.
+
 ## Footprint *(Task 25)*
+
+Idle `pig --mode rpc` with the extension loaded and no prompt sent (`verify.sh` step 3, `footprint -p`, physical
+footprint): **32 MiB across 2 processes** (pig 26 MiB, extension runner 6 MiB). Method: descendants of the pig pid, as
+in SoL-PiG's `scripts/live/verify.sh`; stdin is a fifo held open until measured.
 
 ## Cross-resume *(Task 25)*
 
