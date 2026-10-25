@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	sdk "github.com/MichaelKinsy/PiG/extensions/sdk"
@@ -51,6 +52,9 @@ type exitFailure struct{ err error }
 
 func (e *exitFailure) Error() string { return e.err.Error() }
 func (e *exitFailure) Unwrap() error { return e.err }
+
+// resultFallbackHook is a test seam run inside the result fallback's critical section.
+var resultFallbackHook func()
 
 const closeTimeout = 10 * time.Second
 
@@ -382,16 +386,21 @@ func (b *Bridge) consumeFrame(host Host, q *QueryContext, frame map[string]any, 
 		b.processAssistantMessage(q, frame)
 	case "result":
 		// The success path: push the result text when no stream event delivered it.
-		q.mu.Lock()
-		if q.currentPiStream != nil && q.turnOutput != nil && !q.turnSawStreamEvent && frame["subtype"] == "success" {
-			q.ensureTurnStartedLocked()
-			text := str(frame["result"])
-			idx := q.addBlockLocked(map[string]any{"type": "text", "text": text})
-			q.emitLocked("text_start", idx, nil)
-			q.emitLocked("text_delta", idx, map[string]any{"delta": text})
-			q.emitLocked("text_end", idx, map[string]any{"content": text})
-		}
-		q.mu.Unlock()
+		func() {
+			q.mu.Lock()
+			defer q.mu.Unlock() // a panic below must not leave q.mu held for failQuery
+			if resultFallbackHook != nil {
+				resultFallbackHook()
+			}
+			if q.currentPiStream != nil && q.turnOutput != nil && !q.turnSawStreamEvent && frame["subtype"] == "success" {
+				q.ensureTurnStartedLocked()
+				text := str(frame["result"])
+				idx := q.addBlockLocked(map[string]any{"type": "text", "text": text})
+				q.emitLocked("text_start", idx, nil)
+				q.emitLocked("text_delta", idx, map[string]any{"delta": text})
+				q.emitLocked("text_end", idx, map[string]any{"content": text})
+			}
+		}()
 	case "system":
 		if frame["subtype"] == "init" {
 			res.CapturedSessionID = str(frame["session_id"])
@@ -579,8 +588,11 @@ func killClient(client ccproto.Client) {
 // parked at the next tool call. owner is the opening run's context, already wired
 // to onAbort by the caller.
 func (b *Bridge) newRunBinder(q *QueryContext, owner context.Context, onAbort func()) (bind func(ctx context.Context, runStream *sdk.ModelEventStream), unbind func()) {
+	var mu sync.Mutex // bind runs on the provider-call goroutine, unbind at teardown
 	var stop func() bool
 	unbind = func() {
+		mu.Lock()
+		defer mu.Unlock()
 		if stop != nil {
 			stop()
 			stop = nil
@@ -603,7 +615,10 @@ func (b *Bridge) newRunBinder(q *QueryContext, owner context.Context, onAbort fu
 			onRunAbort()
 			return
 		}
-		stop = context.AfterFunc(ctx, onRunAbort)
+		s := context.AfterFunc(ctx, onRunAbort)
+		mu.Lock()
+		stop = s
+		mu.Unlock()
 	}
 	return bind, unbind
 }

@@ -1492,3 +1492,35 @@ func TestSteerBlocks(t *testing.T) {
 		t.Fatalf("malformed content = %v", err)
 	}
 }
+
+// bind and unbind run on different goroutines in production (the provider call and
+// the teardown); the binder's stop function must be safe against that.
+func TestRunBinderBindAndUnbindFromDifferentGoroutines(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	q := newQueryContext()
+	owner := context.Background()
+	for range 300 {
+		bind, unbind := b.newRunBinder(q, owner, func() {})
+		ctx, cancel := context.WithCancel(context.Background())
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); bind(ctx, sdk.CreateAssistantMessageEventStream()) }()
+		go func() { defer wg.Done(); unbind() }()
+		wg.Wait()
+		unbind()
+		cancel()
+	}
+}
+
+func TestPanicInTheResultFallbackStillEndsWithOneErrorEvent(t *testing.T) {
+	h := newConsumeHarness(t)
+	resultFallbackHook = func() { panic("fallback exploded") }
+	t.Cleanup(func() { resultFallbackHook = nil })
+	h.client.emit(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "x"})
+	done := h.start()
+	receive(t, done, "the consume goroutine (a held q.mu would deadlock failQuery)")
+	terminal := terminalEvents(drain(h.stream))
+	if len(terminal) != 1 || terminal[0]["type"] != "error" || !strings.Contains(str(obj(terminal[0]["error"])["errorMessage"]), "internal error") {
+		t.Fatalf("terminal = %v", terminal)
+	}
+}
