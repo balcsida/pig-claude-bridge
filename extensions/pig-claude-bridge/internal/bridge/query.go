@@ -39,6 +39,13 @@ type QueryContext struct {
 	// Query-scoped.
 	activeQuery     ccproto.Client
 	currentPiStream *sdk.ModelEventStream
+	// model is the model of the turn in progress, set by resetTurnState; usage cost
+	// comes from its rates.
+	model map[string]any
+	// customToolNameToPi maps the SDK's tool names to pi's for this query.
+	customToolNameToPi map[string]string
+	// completedStreams are the streams that got their terminal event (markStreamComplete).
+	completedStreams map[*sdk.ModelEventStream]struct{}
 	// currentOnResponse is the onResponse of the provider call that owns currentPiStream.
 	currentOnResponse func(map[string]any, map[string]any) error
 	// heldRateLimit is the latest rate_limit_event not yet reported; CC sends it
@@ -136,6 +143,7 @@ func (c *QueryContext) releasePendingToolCalls(reason string) {
 func (c *QueryContext) resetTurnState(model map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.model = model
 	c.turnOutput = newAssistantOutput(model)
 	c.turnStarted = false
 	c.turnSawStreamEvent = false
