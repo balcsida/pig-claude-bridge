@@ -78,6 +78,21 @@ PASS
 ok  	github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccproto	206.047s
 ```
 
+### Fix-round re-run
+
+Review fixes: bounded the exit waits (15 s), asserted the recorded exit behaviour (non-nil exit error, no "too long" in it
+or in stderr) and added a `Read` positive control to `TestDisallowedToolsRemovesBash`. Compile check, which costs no quota:
+`cd extensions/pig-claude-bridge && gofmt -l . && go vet -tags live ./internal/ccproto/` (clean). Targeted re-run with
+`claude --version` = `2.1.310 (Claude Code)`:
+
+```
+go test -race -tags live -count=1 -run 'TestIsError|TestDisallowedToolsRemovesBash' ./internal/ccproto/ -v
+--- PASS: TestDisallowedToolsRemovesBash (13.30s)
+--- PASS: TestIsErrorCanBeTrueOnAResultWhoseSubtypeIsStillSuccess (4.69s)
+PASS
+ok  	github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccproto	19.779s
+```
+
 ## Live integration *(Task 25)*
 
 ## Footprint *(Task 25)*

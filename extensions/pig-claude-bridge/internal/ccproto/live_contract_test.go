@@ -240,7 +240,8 @@ func collect(t *testing.T, p *Process, stop func(map[string]any) bool) *observed
 		case raw, ok := <-p.Frames():
 			if !ok {
 				o.closed = true
-				t.Logf("stdout ended before the awaited frame; exit: %v; stderr tail: %s", p.Wait(), p.StderrTail())
+				err, _ := boundedWait(p)
+				t.Logf("stdout ended before the awaited frame; exit: %v; stderr tail: %s", err, p.StderrTail())
 				return o
 			}
 			var f map[string]any
@@ -473,8 +474,22 @@ func TestDisallowedToolsRemovesBash(t *testing.T) {
 			t.Fatalf("Bash was used despite --disallowedTools=Bash: %v", obs.toolUses)
 		}
 	}
-	if tools, _ := obs.init["tools"].([]any); slicesContain(tools, "Bash") {
+	tools, _ := obs.init["tools"].([]any)
+	if !slicesContain(tools, "Read") { // positive control: the builtin set is listed at all
+		t.Fatalf("init.tools lacks the builtin Read, so the Bash check proves nothing: %v", tools)
+	}
+	if slicesContain(tools, "Bash") {
 		t.Fatalf("init.tools still lists Bash: %v", tools)
+	}
+}
+
+// boundedWait waits up to 15s for the child to exit; exited is false on timeout.
+func boundedWait(p *Process) (err error, exited bool) {
+	select {
+	case <-p.Done():
+		return p.Wait(), true
+	case <-time.After(15 * time.Second):
+		return nil, false
 	}
 }
 
@@ -510,9 +525,18 @@ func TestIsErrorCanBeTrueOnAResultWhoseSubtypeIsStillSuccess(t *testing.T) {
 	if !tooLong.MatchString(str(obs.result["result"])) {
 		t.Errorf("expected the API's own text in result.result, got: %v", obs.result["result"])
 	}
-	// The TypeScript SDK then rejects its generator; the client analogue is the exit status, recorded not asserted.
+	// The TypeScript SDK then rejects its generator with "too long"; the client analogue is the exit status:
+	// the CLI exits non-zero without repeating the text.
 	_ = p.EndInput()
-	t.Logf("exit after the failure result: %v", p.Wait())
+	exitErr, exited := boundedWait(p)
+	switch {
+	case !exited:
+		t.Error("the child did not exit within 15s of stdin ending")
+	case exitErr == nil:
+		t.Error("the child exited cleanly after the failure result; the recorded non-zero exit changed")
+	case tooLong.MatchString(exitErr.Error()) || tooLong.MatchString(p.StderrTail()):
+		t.Errorf("the exit now reports the failure text: %v; stderr: %s", exitErr, p.StderrTail())
+	}
 
 	if len(obs.assistants) == 0 {
 		t.Fatal("no assistant message preceded the failure result")
