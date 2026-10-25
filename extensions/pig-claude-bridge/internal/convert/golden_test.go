@@ -82,7 +82,10 @@ func canonical(t *testing.T, line string) string {
 // exactly; free-form values (tool inputs and results) are compared after
 // canonicalisation, because PiG delivers decoded maps that carry no key order.
 func TestGoldenPiHistory310(t *testing.T) {
-	anthropic, _, _ := ConvertPiMessages(loadFixture(t), nil)
+	anthropic, _, _, err := ConvertPiMessages(loadFixture(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	session, err := ccsession.Create(ccsession.Options{
 		SessionID: "00000000-0000-4000-8000-000000000000", ProjectPath: "/golden", Cwd: "/golden",
 		GitBranch: "HEAD", ClaudeDir: t.TempDir(),

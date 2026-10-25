@@ -43,29 +43,29 @@ func SanitizeToolID(id string) string {
 // the MCP prefix. A nil map selects the AskClaude path, where builtin names are
 // real.
 //
-// It panics on a name that already carries the MCP prefix: pi history holds pi
+// It errors on a name that already carries the MCP prefix: pi history holds pi
 // tool names, and prefixing twice invents a tool nobody serves.
-func MapPiToolNameToSdk(name string, custom map[string]string) string {
+func MapPiToolNameToSdk(name string, custom map[string]string) (string, error) {
 	if name == "" {
-		return ""
+		return "", nil
 	}
 	normalized := strings.ToLower(name)
 	if strings.HasPrefix(normalized, MCPToolPrefix) {
-		panic(fmt.Sprintf("convert: MapPiToolNameToSdk: %q is already an SDK tool name — pi history holds pi tool names", name))
+		return "", fmt.Errorf("mapPiToolNameToSdk: %q is already an SDK tool name — pi history holds pi tool names", name)
 	}
 	if custom == nil {
 		if sdk, ok := PiToSdkToolName[normalized]; ok {
-			return sdk
+			return sdk, nil
 		}
-		return pascalCase(name)
+		return pascalCase(name), nil
 	}
 	if sdk, ok := custom[name]; ok {
-		return sdk
+		return sdk, nil
 	}
 	if sdk, ok := custom[normalized]; ok {
-		return sdk
+		return sdk, nil
 	}
-	return MCPToolPrefix + name
+	return MCPToolPrefix + name, nil
 }
 
 var (
@@ -223,7 +223,7 @@ func (d *Dropped) addProvider(p string) {
 }
 
 // ConvertPiMessages converts a pi message array to Anthropic messages.
-func ConvertPiMessages(messages []map[string]any, custom map[string]string) (anthropic []ccsession.Message, sanitizedIDs map[string]string, dropped Dropped) {
+func ConvertPiMessages(messages []map[string]any, custom map[string]string) (anthropic []ccsession.Message, sanitizedIDs map[string]string, dropped Dropped, err error) {
 	anthropic = []ccsession.Message{}
 	sanitizedIDs = map[string]string{}
 	dropped.Other = map[string]int{}
@@ -272,7 +272,11 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 					if input == nil {
 						input = map[string]any{}
 					}
-					blocks = append(blocks, ccsession.ToolUseBlock{Type: "tool_use", ID: sanitize(str(block["id"])), Name: MapPiToolNameToSdk(str(block["name"]), custom), Input: input})
+					name, err := MapPiToolNameToSdk(str(block["name"]), custom)
+					if err != nil {
+						return nil, nil, Dropped{}, err
+					}
+					blocks = append(blocks, ccsession.ToolUseBlock{Type: "tool_use", ID: sanitize(str(block["id"])), Name: name, Input: input})
 				default:
 					dropped.Other[typ]++
 				}
@@ -319,7 +323,7 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 			anthropic[turnResultsIdx] = results
 		}
 	}
-	return anthropic, sanitizedIDs, dropped
+	return anthropic, sanitizedIDs, dropped, nil
 }
 
 func userContent(content any) any {
