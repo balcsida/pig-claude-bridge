@@ -204,12 +204,120 @@ Findings:
    sees with no stale content. Case 4: `ccsession.Delete` already removes the companion directory, no parity gap.
    These three add to the 22 contract tests counted above (that run predates them).
 
+### Live integration, part 3 of 3 *(Task 25c)*
+
+The remaining integration tests, the cross-resume script and this results section. Each test ran once on its own
+(`go test -race -tags live -count=1 -run '^Test<Name>$' -v ./...`) in one work dir (`scripts/live/work/25c`) on 2026-10-25.
+
+Versions: pig `0.5.3+1.4.0.74f46864`, claude `2.1.310 (Claude Code)`, go `1.27.3 darwin/arm64`; node was not run by this
+task (PiG runs it for its own extensions and for the npm source of the subagent test).
+
+| item | result | seconds |
+|---|---|---|
+| `TestIntToolMessage` (9 subtests, one pig process) | PASS (all nine subtests; steer reached CC as a `queued_command` between the tool result and the next assistant record) | 156.8 |
+| `TestIntAttachmentRebuild` (runs the two `internal/ccproto` tests below) | PASS (token returned with the carry; control did not return it) | 23.5 |
+| `TestIntParallelToolResults` (runs the two `internal/ccproto` tests below) | PASS (3 results on disk; Claude read all three back) | 8.8 |
+| `TestIntShutdownKillsCcAbort` | PASS (the `claude` under pig was gone within 5 s of the abort) | 11.2 |
+| `TestIntShutdownKillsCcSigterm` | PASS (pig exited, no `claude` survivor) | 8.4 |
+| `TestIntShutdownKillsCcStdinClose` | PASS (pig exited on end of input, no `claude` survivor) | 8.3 |
+| `TestIntSubagentRpivCodebaseLocator` | PASS (foreground and background Agent runs, reentrant marker seen, no stuck-handler signature) | 53.9 |
+| `int-cross-resume.sh` | PASS: 7 checks (rerun once after a check fix, see Cross-resume) | 10 |
+| deadlock check over the run's logs (6 debug logs) | no bridge deadlock warnings | 0 |
+
+SKIP rows:
+
+| test | result |
+|---|---|
+| `TestIntImageSession` | SKIP (CLAUDE_BRIDGE_TESTING_ALT_PROVIDER / CLAUDE_BRIDGE_TESTING_ALT_MODEL unset) |
+
+Adaptations from the TypeScript tests:
+- `int-attachment-rebuild.mjs` and `int-parallel-tool-results.mjs` are not RPC tests: they call the conversion and
+  session code and the Agent SDK directly, which `tests/live` (a separate zero-dependency module) cannot import. As for
+  `int-session-rebuild` in 25b, the bodies are `-tags live` tests in `extensions/pig-claude-bridge/internal/ccproto`
+  (`live_attachment_test.go`, `live_parallel_results_test.go`), and `tests/live/int-attachment-rebuild_test.go` and
+  `int-parallel-tool-results_test.go` run them with `go test -tags live` and fail on a non-pass. Differences from the
+  originals: the resumed query runs with no builtin tools (`--tools ""`, as the 25b rebuild tests), the attachment
+  fixture is a temp dir outside the scratch project, and the scratch project replaces `process.cwd()`.
+- `int-tool-message.mjs`: `-e ./tests/fixtures/slow-tool-extension.ts` becomes the absolute fixture path; each
+  `it` is a `t.Run` with its own bound (the `{timeout}` of the original, run in a goroutine so a hang fails the subtest);
+  `afterEach` restarts pig if it died. `getProjectDir(harness.DIR)` becomes the project hash of the harness cwd
+  (`<work>/project`), read through the debug log's `query done, session=<id8>`. Markers, prompts and assertions are verbatim.
+- `int-shutdown-kills-cc.mjs`: the two TypeScript cases (abort; SIGTERM) are kept and a third added for the stdin close,
+  PiG's documented shutdown path. The chain is pig -> extension runner -> `claude`; `claude` is found by the executable's
+  basename in the harness's descendant listing, with the same 5 s grace. A survivor would be a Finding; there was none.
+- `int-image-session.mjs`: `--provider/--model` come from the environment only; the cleanup removes the project hash
+  directory of the test's own cwd.
+- `int-subagent-rpiv-codebase-locator.mjs`: ported, not skipped. `pig install npm:@tintinweb/pi-subagents@0.14.3
+  --validate-only --json` validates (tools `Agent`, `get_subagent_result`, `steer_subagent`), and the Agent tool runs under
+  pig. `PI_CODING_AGENT_DIR` becomes `PIG_CODING_AGENT_DIR` in a temp agent dir; the agent file is our copy at
+  `tests/fixtures/agents/codebase-locator.md`, placed in the project's `.pi/agents/` (the directory pi-subagents reads).
+
 ## Footprint *(Task 25)*
 
 Idle `pig --mode rpc` with the extension loaded and no prompt sent (`verify.sh` step 3, `footprint -p`, physical
 footprint): **32 MiB across 2 processes** (pig 26 MiB, extension runner 6 MiB). Method: descendants of the pig pid, as
 in SoL-PiG's `scripts/live/verify.sh`; stdin is a fifo held open until measured.
 
+| side | version | command | MiB | processes | Claude Code at idle |
+|---|---|---|---|---|---|
+| pig (this port) | pig `0.5.3+1.4.0.74f46864` | `pig --mode rpc`, extension loaded, `verify.sh` step 3 | 32 (pig 26 + runner 6) | 2 | not spawned until the first prompt |
+| pi with the TypeScript bridge | pi 1.4.0 | `pi --no-session -ne -e . --mode rpc`, idle before any prompt, fresh `PI_CODING_AGENT_DIR` | 205 (controller measurement, recorded as given) | 1 | not spawned until the first prompt |
+
+Same descendant method on both sides. The TypeScript row was measured by the controller, not by this task.
+
 ## Cross-resume *(Task 25)*
 
+Forward direction (a conversation recorded by the TypeScript bridge, resumed by this port): `scripts/live/int-cross-resume.sh`.
+
+`tests/fixtures/pi-history-310.jsonl` is not a pi session file: it is the bare list of the 310 pi messages a real
+claude-bridge session held (one JSON message per line, no header, no entry ids, no `cwd`; text, arguments and results are
+placeholders such as `t0:128`). The script wraps it into a version-3 session file in the temp project (header with that
+project's `cwd`, one `message` entry per line chained by `parentId`) and resumes it with `pig --session <file> -e <repo>
+--mode json -p '<question>'`. PiG accepted the file, so the RPC `switch_session` fallback and the foreign-`cwd` case did not
+arise (the header `cwd` is the temp project). The question, "What was the exact text of my very first message in this
+conversation? Reply with just that text.", can only be answered from the recorded history (`t0:128`).
+
+| check | result |
+|---|---|
+| the answer quotes the first message of the recorded history | PASS (`t0:128`) |
+| the first turn's `syncResult` is `path=rebuild` | PASS |
+| the rebuilt Claude Code session file exists under the project hash of the temp dir | PASS (`<claude dir>/projects/<hash>/<id>.jsonl`) |
+| the first record is `type: user` | PASS |
+| at least 311 records (324: the 310 messages as 297 rebuilt records, plus Claude Code's own records for the new turn) | PASS |
+| the records chain (first record a root, every `parentUuid` names an earlier record) | PASS |
+| `check_deadlock_logs` over the run | no bridge deadlock warnings |
+
+The first run failed the chain check as first written (each `parentUuid` equal to the previous record's `uuid`): Claude Code
+appends `queue-operation`, `attachment` and similar records of its own after the rebuilt ones, which break a strict
+previous-record chain. The rebuilt records themselves chain strictly (checked by hand on that run's file). The check was
+changed to the referential form above and the script rerun once; all seven checks passed on the rerun (10 s).
+
+| direction | status |
+|---|---|
+| TypeScript-recorded session resumed by this port | PASS (above) |
+| pig-created session resumed by the TypeScript bridge under pi | **pending: the controller's manual check** (not run by this task; pi is not run here) |
+
 ## Prompt text *(Task 25)*
+
+`grep -rn 'prompt-capture:'` over every debug log of the 25a-25c work dirs (`gate`: 6 logs, `25b`: 10, `25c`: 6):
+no line in any log of the main agent, so every main-agent turn took the exact-key capture path (PiG handed the same system
+prompt to `before_agent_start` and `streamSimple`).
+
+Finding (not a regression, recorded for the controller): two `prompt-capture: no match` lines, both in
+`subagent-rpiv-codebase-locator-debug.log`, one per Agent run (foreground and background):
+
+```
+prompt-capture: no match for 4133-char system prompt. closest known (26567-char) shares its first 0 chars and diverges at offset 0: "<active_agent name=\"codebase-locator\"/>\n\nYou are a pi coding" known keys=1
+```
+
+The prompt is the subagent's own session prompt (`<active_agent name="codebase-locator"/>` and the agent file), which
+pi-subagents builds for its child session; it never passes the parent agent's `before_agent_start`, so no capture exists
+for it. The bridge logged `DIAG: prompt_capture_unresolved` and the test passed. The original TypeScript test does not read
+this line, and whether the TypeScript bridge logs the same miss for that child prompt was not checked (pi is not run here).
+
+Spike S3 (the system message as a `sections` map): PiG's context carries the system message with empty `content` and a
+`sections` map (and `toolsAdded`), not a plain string. The bridge does not use that map to find the capture: it keys on the
+plain `systemPrompt` string of the provider context and on the `systemPromptOptions` it recorded at `before_agent_start`
+(whose `sections`, an ordered list built in `extension.go`, feed the capture's inputs). The map in the system message is
+only read when the transcript is rebuilt (`convert/transcript.go` replays the patches). From the code and the absence of
+any miss above; the `sections` map path has no separate live probe in this task.
