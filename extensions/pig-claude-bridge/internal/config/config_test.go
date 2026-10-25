@@ -164,4 +164,14 @@ func TestLoad(t *testing.T) {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
+
+	t.Run("a mistyped value keeps the file's other keys", func(t *testing.T) {
+		agentDir, cwd := t.TempDir(), t.TempDir()
+		write(t, GlobalConfigPath(agentDir), `{"provider":{"plan":"max","forceTwoHundredK":"claude-x"},"askClaude":{"enabled":"false"}}`)
+
+		want := Config{Provider: &ProviderConfig{Plan: ptr("max")}, AskClaude: &AskClaudeConfig{}}
+		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+	})
 }

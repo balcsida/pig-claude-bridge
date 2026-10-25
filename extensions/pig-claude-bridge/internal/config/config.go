@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 )
 
 type Config struct {
@@ -63,16 +64,14 @@ func ClaudeCodeSettings(p *ProviderConfig) map[string]any {
 	return map[string]any{"autoMemoryEnabled": enabled}
 }
 
-// Load merges the project file over the global file per key. Decoding the project
-// file into the already-decoded global config overwrites only the keys it sets.
+// Load merges the project file over the global file per key; a key the project file
+// does not set keeps the global value. Unreadable or unparseable files count as empty.
 func Load(agentDir, cwd, configDirName string) Config {
 	cfg := Config{}
 	for _, path := range []string{GlobalConfigPath(agentDir), ProjectConfigPath(cwd, configDirName)} {
-		data, err := os.ReadFile(path)
-		if err != nil || json.Unmarshal(data, new(Config)) != nil {
-			continue
+		if data, err := os.ReadFile(path); err == nil {
+			decodeValidKeys(data, &cfg)
 		}
-		_ = json.Unmarshal(data, &cfg)
 	}
 	if cfg.AskClaude == nil {
 		cfg.AskClaude = &AskClaudeConfig{}
@@ -81,6 +80,39 @@ func Load(agentDir, cwd, configDirName string) Config {
 		cfg.Provider = &ProviderConfig{}
 	}
 	return cfg
+}
+
+// decodeValidKeys merges the keys of a JSON file into cfg, skipping any key whose
+// value has the wrong type (TS passes those through; encoding/json would leave a
+// zero-value pointer behind). A syntax error leaves cfg untouched.
+func decodeValidKeys(data []byte, cfg *Config) {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return
+	}
+	for _, section := range []struct {
+		key string
+		dst any
+	}{{"askClaude", &cfg.AskClaude}, {"provider", &cfg.Provider}} {
+		if v, ok := raw[section.key]; ok {
+			delete(raw, section.key)
+			var keys map[string]json.RawMessage
+			if json.Unmarshal(v, &keys) == nil {
+				decodeKeys(keys, section.dst)
+			}
+		}
+	}
+	decodeKeys(raw, cfg)
+}
+
+// decodeKeys unmarshals each key into dst only if it decodes cleanly into a fresh value.
+func decodeKeys(keys map[string]json.RawMessage, dst any) {
+	for k, v := range keys {
+		obj, _ := json.Marshal(map[string]json.RawMessage{k: v})
+		if json.Unmarshal(obj, reflect.New(reflect.TypeOf(dst).Elem()).Interface()) == nil {
+			_ = json.Unmarshal(obj, dst)
+		}
+	}
 }
 
 // MarkStartupNoticeShown records date in the global config, preserving every other key.
