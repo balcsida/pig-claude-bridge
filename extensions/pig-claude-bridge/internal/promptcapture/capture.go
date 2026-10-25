@@ -128,9 +128,8 @@ func (c *Captures) Record(systemPrompt string, in Input, source string) {
 	existing := c.byKey[systemPrompt]
 	capture := existing
 	if capture == nil {
-		capture = &Capture{AssembledPrompt: systemPrompt}
+		capture = &Capture{AssembledPrompt: systemPrompt, mu: &c.mu}
 	}
-	capture.mu = &c.mu
 	customChanged := existing == nil || existing.Custom != in.Custom
 
 	capture.Custom = in.Custom
@@ -263,7 +262,7 @@ func (c *Captures) closestKnown(systemPrompt string) []Match {
 		for i < limit && key[i] == systemPrompt[i] {
 			i++
 		}
-		for i < limit && !utf8.RuneStart(key[i]) {
+		for i > 0 && i < limit && !utf8.RuneStart(key[i]) {
 			i--
 		}
 		if i >= shared {

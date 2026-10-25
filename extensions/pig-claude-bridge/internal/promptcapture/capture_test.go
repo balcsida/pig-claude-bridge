@@ -605,3 +605,38 @@ func TestDiagnosticUnits(t *testing.T) {
 		mustMatch(t, `at offset 4 of 58 chars`, err.Error())
 	})
 }
+
+func TestProjectReRecordedKey(t *testing.T) {
+	t.Run("projects a capture while the same key is re-recorded", func(t *testing.T) {
+		c := NewCaptures(0, nil)
+		c.Record(parentKey, Input{ContextFiles: agents("rules")}, "")
+		found, _ := c.Resolve(parentKey)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				c.Record(parentKey, Input{ContextFiles: agents(fmt.Sprint("rules ", i))}, "agent_start")
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				if _, err := ProjectPromptCapture(found, "mcp", debugPath); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+		wg.Wait()
+	})
+
+	t.Run("does not panic when a key starts with a continuation byte", func(t *testing.T) {
+		c := NewCaptures(0, nil)
+		c.Record("\x80abc", Input{}, "")
+		if _, err := c.ResolveOrDerive("zzz"); err == nil {
+			t.Fatal("want error")
+		}
+	})
+}
