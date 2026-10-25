@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -113,6 +114,18 @@ func TestBuildInitializeOmitsSystemPromptForPreset(t *testing.T) {
 	for _, k := range []string{"systemPrompt", "appendSystemPrompt", "hooks", "sdkMcpServers", "skills"} {
 		if _, ok := m.Request[k]; ok {
 			t.Errorf("%s present", k)
+		}
+	}
+}
+
+func TestBuildArgsDisallowedTools(t *testing.T) {
+	got := BuildArgs(Options{DisallowedTools: []string{"Write", "Bash"}})
+	if !slices.Contains(got, "--disallowedTools=Write,Bash") {
+		t.Fatalf("no --disallowedTools in %q", got)
+	}
+	for _, a := range BuildArgs(Options{}) {
+		if strings.HasPrefix(a, "--disallowedTools") {
+			t.Fatal("--disallowedTools emitted when empty")
 		}
 	}
 }

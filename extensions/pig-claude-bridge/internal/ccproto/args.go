@@ -36,7 +36,7 @@ type Options struct {
 	ToolsSet                              bool
 	SettingSources                        []string
 	SettingSourcesSet                     bool
-	AllowedTools                          []string
+	AllowedTools, DisallowedTools         []string
 	PermissionMode                        string
 	Settings                              map[string]any
 	DebugFile                             string
@@ -78,6 +78,9 @@ func BuildArgs(o Options) []string {
 	}
 	if len(o.AllowedTools) > 0 {
 		args = append(args, "--allowedTools="+strings.Join(o.AllowedTools, ","))
+	}
+	if len(o.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools="+strings.Join(o.DisallowedTools, ","))
 	}
 	if o.ToolsSet {
 		args = append(args, "--tools="+strings.Join(o.Tools, ","))

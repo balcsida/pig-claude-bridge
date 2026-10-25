@@ -8,6 +8,7 @@ import (
 
 	sdk "github.com/MichaelKinsy/PiG/extensions/sdk"
 
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/askclaude"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/bridge"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccproto"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/config"
@@ -142,6 +143,11 @@ func Extension() *sdk.Extension {
 		"models":       providerModels(cfg.Provider),
 		"streamSimple": sdk.ProviderStreamSimpleFunc(streamSimple),
 	})
+
+	if a := cfg.AskClaude; a != nil && a.Enabled != nil && *a.Enabled {
+		ext.RegisterTool(askclaude.Definition(b, cfg, agentDir,
+			func(ctx sdk.Context) bridge.Host { return sdkHost{ctx} }, requestContext))
+	}
 
 	ext.OnSessionStart(func(ctx sdk.Context, data map[string]any) (any, error) {
 		defer func() { _ = recover() }()
