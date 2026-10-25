@@ -1,0 +1,165 @@
+// Package config loads the user-facing claude-bridge.json: the global file in
+// the agent dir, overridden per key by the project file in the project config
+// directory. Missing or unparseable files count as empty so the extension
+// always starts.
+package config
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+)
+
+type Config struct {
+	// StartupNoticeShown is the date (YYYY-MM-DD) the one-time startup notice was shown. Written by the extension, not the user.
+	StartupNoticeShown string `json:"startupNoticeShown,omitempty"`
+	// AskClaudeDeprecationShown is the date (YYYY-MM-DD) the AskClaude deprecation notice was shown. Written by the extension, not the user.
+	AskClaudeDeprecationShown string           `json:"askClaudeDeprecationShown,omitempty"`
+	AskClaude                 *AskClaudeConfig `json:"askClaude,omitempty"`
+	// Provider is low-level Claude Agent SDK plumbing. Most users won't need it.
+	Provider *ProviderConfig `json:"provider,omitempty"`
+}
+
+type AskClaudeConfig struct {
+	Enabled         *bool   `json:"enabled,omitempty"`
+	Name            *string `json:"name,omitempty"`
+	Label           *string `json:"label,omitempty"`
+	Description     *string `json:"description,omitempty"`
+	DefaultMode     *string `json:"defaultMode,omitempty"` // "full" | "read" | "none"
+	DefaultIsolated *bool   `json:"defaultIsolated,omitempty"`
+	AllowFullMode   *bool   `json:"allowFullMode,omitempty"`
+	AppendSkills    *bool   `json:"appendSkills,omitempty"`
+}
+
+type ProviderConfig struct {
+	StrictMcpConfig            *bool   `json:"strictMcpConfig,omitempty"`
+	AutoMemoryEnabled          *bool   `json:"autoMemoryEnabled,omitempty"`
+	PathToClaudeCodeExecutable *string `json:"pathToClaudeCodeExecutable,omitempty"`
+	// Plan is the subscription tier ("pro" | "max"). "max" enables Opus 4.6 at 1M context.
+	Plan *string `json:"plan,omitempty"`
+	// LongContextExtraUsage opts into metered 1M context usage. Enables Sonnet 4.6 [1m]
+	// on every plan and Opus 4.6 [1m] on Pro.
+	LongContextExtraUsage *bool `json:"longContextExtraUsage,omitempty"`
+	// ForceTwoHundredK lists model ids whose declared 1M context Claude Code does not
+	// actually serve; they are pinned to the bare id at 200K.
+	ForceTwoHundredK []string `json:"forceTwoHundredK,omitempty"`
+}
+
+func GlobalConfigPath(agentDir string) string {
+	return filepath.Join(agentDir, "claude-bridge.json")
+}
+
+func ProjectConfigPath(cwd, configDirName string) string {
+	return filepath.Join(cwd, configDirName, "claude-bridge.json")
+}
+
+// ClaudeCodeSettings returns the settings object handed to Claude Code; auto-memory is off unless set.
+func ClaudeCodeSettings(p *ProviderConfig) map[string]any {
+	enabled := false
+	if p != nil && p.AutoMemoryEnabled != nil {
+		enabled = *p.AutoMemoryEnabled
+	}
+	return map[string]any{"autoMemoryEnabled": enabled}
+}
+
+// Load merges the project file over the global file per key. Decoding the project
+// file into the already-decoded global config overwrites only the keys it sets.
+func Load(agentDir, cwd, configDirName string) Config {
+	cfg := Config{}
+	for _, path := range []string{GlobalConfigPath(agentDir), ProjectConfigPath(cwd, configDirName)} {
+		data, err := os.ReadFile(path)
+		if err != nil || json.Unmarshal(data, new(Config)) != nil {
+			continue
+		}
+		_ = json.Unmarshal(data, &cfg)
+	}
+	if cfg.AskClaude == nil {
+		cfg.AskClaude = &AskClaudeConfig{}
+	}
+	if cfg.Provider == nil {
+		cfg.Provider = &ProviderConfig{}
+	}
+	return cfg
+}
+
+// MarkStartupNoticeShown records date in the global config, preserving every other key.
+func MarkStartupNoticeShown(agentDir, date string) error {
+	return setGlobalKey(agentDir, "startupNoticeShown", date)
+}
+
+// MarkAskClaudeDeprecationNoticeShown records date in the global config, preserving every other key.
+func MarkAskClaudeDeprecationNoticeShown(agentDir, date string) error {
+	return setGlobalKey(agentDir, "askClaudeDeprecationShown", date)
+}
+
+// setGlobalKey leaves an unparseable file alone and returns nil: Load reports it as
+// empty, so rewriting would replace a user's whole config with just this marker.
+// Losing the notice is the cheaper failure; it simply shows again next session.
+func setGlobalKey(agentDir, key, value string) error {
+	path := GlobalConfigPath(agentDir)
+	keys, values := []string{}, map[string]json.RawMessage{}
+	if data, err := os.ReadFile(path); err == nil {
+		var ok bool
+		if keys, values, ok = parseObject(data); !ok {
+			return nil
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	raw, _ := json.Marshal(value)
+	if _, exists := values[key]; !exists {
+		keys = append(keys, key)
+	}
+	values[key] = raw
+
+	var buf bytes.Buffer
+	buf.WriteString("{")
+	for i, k := range keys {
+		if i > 0 {
+			buf.WriteString(",")
+		}
+		kb, _ := json.Marshal(k)
+		buf.WriteString("\n  ")
+		buf.Write(kb)
+		buf.WriteString(": ")
+		buf.Write(values[k])
+	}
+	buf.WriteString("\n}")
+	var out bytes.Buffer
+	if err := json.Indent(&out, buf.Bytes(), "", "  "); err != nil {
+		return err
+	}
+	out.WriteString("\n")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, out.Bytes(), 0o644)
+}
+
+// parseObject returns a JSON object's keys in file order, as JavaScript preserves them.
+func parseObject(data []byte) (keys []string, values map[string]json.RawMessage, ok bool) {
+	if json.Unmarshal(data, &values) != nil || values == nil {
+		return nil, nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	_, _ = dec.Token() // opening brace
+	for dec.More() {
+		k, _ := dec.Token()
+		var skip json.RawMessage
+		_ = dec.Decode(&skip)
+		if name := k.(string); !contains(keys, name) {
+			keys = append(keys, name)
+		}
+	}
+	return keys, values, true
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
