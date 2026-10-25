@@ -10,18 +10,17 @@ import (
 func TestBuildArgsProviderShape(t *testing.T) {
 	o := Options{
 		Effort: "high", Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions",
-		IncludePartialMessages: true, Resume: "abc-123", Model: "claude-opus-4-7",
-		ReplayUserMessages: true, StrictMcpConfig: true, ThinkingDisplay: "summarized",
+		IncludePartialMessages: true, Resume: "abc-123", Model: "claude-opus-4-7", StrictMcpConfig: true,
 		Settings:  map[string]any{"includeGitInstructions": false, "claudeMdExcludes": []string{"**/CLAUDE.md"}},
 		DebugFile: "/tmp/cli.log",
+		ExtraArgs: []ExtraArg{{Key: "replay-user-messages"}, {Key: "thinking-display", Value: ptr("summarized")}},
 	}
 	want := []string{
 		"--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
-		"--effort=high", "--tools=", "--permission-mode=bypassPermissions", "--include-partial-messages",
-		"--resume=abc-123", "--model=claude-opus-4-7", "--replay-user-messages", "--strict-mcp-config",
-		"--thinking-display=summarized",
+		"--effort=high", "--model=claude-opus-4-7", "--debug-file=/tmp/cli.log", "--resume=abc-123", "--tools=",
+		"--strict-mcp-config", "--permission-mode=bypassPermissions", "--include-partial-messages",
+		"--replay-user-messages", "--thinking-display", "summarized",
 		"--settings", `{"claudeMdExcludes":["**/CLAUDE.md"],"includeGitInstructions":false}`,
-		"--debug-file=/tmp/cli.log",
 	}
 	if got := BuildArgs(o); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %q\nwant %q", got, want)
@@ -29,9 +28,9 @@ func TestBuildArgsProviderShape(t *testing.T) {
 }
 
 func TestBuildArgsIsolatedShape(t *testing.T) {
-	o := Options{Tools: nil, ToolsSet: true, NoSessionPersistence: true, StrictMcpConfig: true, Model: "m"}
+	o := Options{Tools: nil, ToolsSet: true, NoSessionPersistence: true, StrictMcpConfig: true, Model: "m", MaxTurns: 2, SettingSourcesSet: true}
 	want := []string{"--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
-		"--tools=", "--model=m", "--strict-mcp-config", "--no-session-persistence"}
+		"--max-turns=2", "--model=m", "--tools=", "--setting-sources=", "--strict-mcp-config", "--no-session-persistence"}
 	if got := BuildArgs(o); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -101,7 +100,7 @@ func TestBuildEnvKeepsPresetIdentityAndChildEnvWins(t *testing.T) {
 
 func TestBuildInitializeOmitsSystemPromptForPreset(t *testing.T) {
 	got := string(BuildInitialize(Options{SDKMcpServers: []string{"pig"}, AppendSystemPrompt: "be <brief>"}, "req_1"))
-	want := `{"type":"control_request","request_id":"req_1","request":{"subtype":"initialize","sdkMcpServers":["pig"],"appendSystemPrompt":"be <brief>"}}`
+	want := `{"request_id":"req_1","type":"control_request","request":{"subtype":"initialize","sdkMcpServers":["pig"],"appendSystemPrompt":"be <brief>"}}`
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
@@ -111,12 +110,9 @@ func TestBuildInitializeOmitsSystemPromptForPreset(t *testing.T) {
 	if err := json.Unmarshal(BuildInitialize(Options{}, "r"), &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"systemPrompt", "appendSystemPrompt", "hooks"} {
+	for _, k := range []string{"systemPrompt", "appendSystemPrompt", "hooks", "sdkMcpServers", "skills"} {
 		if _, ok := m.Request[k]; ok {
 			t.Errorf("%s present", k)
 		}
-	}
-	if !reflect.DeepEqual(m.Request["sdkMcpServers"], []any{}) {
-		t.Errorf("sdkMcpServers = %v", m.Request["sdkMcpServers"])
 	}
 }

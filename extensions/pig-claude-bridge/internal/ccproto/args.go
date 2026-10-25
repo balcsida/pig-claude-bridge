@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -25,37 +26,55 @@ type ExtraArg struct {
 
 // Options describes one Claude Code child process.
 type Options struct {
-	Executable, Cwd                                           string
-	Env                                                       []string // extra entries appended to the base environment by BuildEnv
-	Model, Effort, ThinkingDisplay, Resume                    string
-	StrictMcpConfig, ReplayUserMessages, NoSessionPersistence bool
-	IncludePartialMessages                                    bool
-	Tools                                                     []string
-	ToolsSet                                                  bool
-	AllowedTools                                              []string
-	PermissionMode                                            string
-	Settings                                                  map[string]any
-	DebugFile                                                 string
-	SDKMcpServers                                             []string
-	AppendSystemPrompt                                        string
-	ExtraArgs                                                 []ExtraArg
+	Executable, Cwd                       string
+	Env                                   []string // extra entries appended to the base environment by BuildEnv
+	Model, Effort, Resume                 string
+	MaxTurns                              int
+	StrictMcpConfig, NoSessionPersistence bool
+	IncludePartialMessages                bool
+	Tools                                 []string
+	ToolsSet                              bool
+	SettingSources                        []string
+	SettingSourcesSet                     bool
+	AllowedTools                          []string
+	PermissionMode                        string
+	Settings                              map[string]any
+	DebugFile                             string
+	SDKMcpServers                         []string
+	AppendSystemPrompt                    string
+	SystemPrompt                          string // sent in initialize as a one-element array when SystemPromptSet
+	SystemPromptSet                       bool
+	Skills                                []string // nil is omitted from initialize; non-nil (even empty) is sent
+	ExtraArgs                             []ExtraArg
 }
 
-// cy mirrors the SDK helper: two tokens, or one k=v token when the value starts with "-".
-func cy(key, value string) []string {
-	if strings.HasPrefix(value, "-") {
+// sdkOption mirrors the SDK helper Oy: two tokens, or one k=v token when the value is longer than "-" and starts with "-".
+func sdkOption(key, value string) []string {
+	if len(value) > 1 && strings.HasPrefix(value, "-") {
 		return []string{key + "=" + value}
 	}
 	return []string{key, value}
 }
 
-// BuildArgs returns the argv in the SDK's emission order (reference 1.2) for the options the bridge uses.
-// Model, ReplayUserMessages, StrictMcpConfig and ThinkingDisplay are emitted where the bridge's extraArgs
-// land, before settings (reference section 6). SDK MCP servers and the system prompt never appear on argv.
+// BuildArgs returns the argv in the order the Node SDK 0.3.310 emits it for the options the bridge uses
+// (pinned by testdata/sdk-argv-snapshot.json). Options become --k=v tokens; ExtraArgs and --settings come
+// last as two-token pairs (extraArgs first, settings after). SDK MCP servers and the system prompt never appear on argv.
 func BuildArgs(o Options) []string {
 	args := []string{"--output-format", "stream-json", "--verbose", "--input-format", "stream-json"}
 	if o.Effort != "" {
 		args = append(args, "--effort="+o.Effort)
+	}
+	if o.MaxTurns > 0 {
+		args = append(args, "--max-turns="+strconv.Itoa(o.MaxTurns))
+	}
+	if o.Model != "" {
+		args = append(args, "--model="+o.Model)
+	}
+	if o.DebugFile != "" {
+		args = append(args, "--debug-file="+o.DebugFile)
+	}
+	if o.Resume != "" {
+		args = append(args, "--resume="+o.Resume)
 	}
 	if len(o.AllowedTools) > 0 {
 		args = append(args, "--allowedTools="+strings.Join(o.AllowedTools, ","))
@@ -63,42 +82,30 @@ func BuildArgs(o Options) []string {
 	if o.ToolsSet {
 		args = append(args, "--tools="+strings.Join(o.Tools, ","))
 	}
+	if o.SettingSourcesSet {
+		args = append(args, "--setting-sources="+strings.Join(o.SettingSources, ","))
+	}
+	if o.StrictMcpConfig {
+		args = append(args, "--strict-mcp-config")
+	}
 	if o.PermissionMode != "" {
 		args = append(args, "--permission-mode="+o.PermissionMode)
 	}
 	if o.IncludePartialMessages {
 		args = append(args, "--include-partial-messages")
 	}
-	if o.Resume != "" {
-		args = append(args, "--resume="+o.Resume)
-	}
-	if o.Model != "" {
-		args = append(args, "--model="+o.Model)
-	}
-	if o.ReplayUserMessages {
-		args = append(args, "--replay-user-messages")
-	}
-	if o.StrictMcpConfig {
-		args = append(args, "--strict-mcp-config")
-	}
-	if o.ThinkingDisplay != "" {
-		args = append(args, "--thinking-display="+o.ThinkingDisplay)
-	}
-	if len(o.Settings) > 0 {
-		args = append(args, cy("--settings", settingsJSON(o.Settings))...)
+	if o.NoSessionPersistence {
+		args = append(args, "--no-session-persistence")
 	}
 	for _, e := range o.ExtraArgs {
 		if e.Value == nil {
 			args = append(args, "--"+e.Key)
 		} else {
-			args = append(args, cy("--"+e.Key, *e.Value)...)
+			args = append(args, sdkOption("--"+e.Key, *e.Value)...)
 		}
 	}
-	if o.NoSessionPersistence {
-		args = append(args, "--no-session-persistence")
-	}
-	if o.DebugFile != "" {
-		args = append(args, "--debug-file="+o.DebugFile)
+	if len(o.Settings) > 0 {
+		args = append(args, sdkOption("--settings", settingsJSON(o.Settings))...)
 	}
 	return args
 }
@@ -153,23 +160,28 @@ func BuildEnv(base []string, o Options) []string {
 	return append(env, "PI_CODING_AGENT=true")
 }
 
-// BuildInitialize returns the initialize control request (reference 2.2) as one JSON object without newline.
-// systemPrompt is omitted (preset) and no hooks are sent.
+// BuildInitialize returns the initialize control request as one JSON object without newline, with the
+// key order the Node SDK writes. sdkMcpServers is omitted when there are none; no hooks are sent.
 func BuildInitialize(o Options, requestID string) []byte {
-	servers := o.SDKMcpServers
-	if servers == nil {
-		servers = []string{}
-	}
 	type request struct {
 		Subtype            string   `json:"subtype"`
-		SDKMcpServers      []string `json:"sdkMcpServers"`
+		SystemPrompt       []string `json:"systemPrompt,omitempty"`
+		SDKMcpServers      []string `json:"sdkMcpServers,omitempty"`
 		AppendSystemPrompt string   `json:"appendSystemPrompt,omitempty"`
+		Skills             any      `json:"skills,omitempty"` // holds o.Skills only when non-nil, so an empty list is still sent
+	}
+	r := request{Subtype: "initialize", SDKMcpServers: o.SDKMcpServers, AppendSystemPrompt: o.AppendSystemPrompt}
+	if o.SystemPromptSet {
+		r.SystemPrompt = []string{o.SystemPrompt}
+	}
+	if o.Skills != nil {
+		r.Skills = o.Skills
 	}
 	frame := struct {
-		Type      string  `json:"type"`
 		RequestID string  `json:"request_id"`
+		Type      string  `json:"type"`
 		Request   request `json:"request"`
-	}{"control_request", requestID, request{"initialize", servers, o.AppendSystemPrompt}}
+	}{requestID, "control_request", r}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
