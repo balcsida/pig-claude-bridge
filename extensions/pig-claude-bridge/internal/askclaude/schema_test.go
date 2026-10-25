@@ -115,8 +115,12 @@ func TestAllowFullModeFalse(t *testing.T) {
 		equal(t, err, nil)
 		equal(t, mode, ModeRead)
 	})
-	// The TypeScript fails closed for a non-boolean allowFullMode. config.Load drops a
-	// wrongly typed key, so the Go config reaches ResolveDefaults as nil (see the report).
+	t.Run("fails closed for a malformed non-boolean allowFullMode", func(t *testing.T) {
+		// config.Load turns a mistyped allowFullMode ("false", 0) into false before it reaches ResolveDefaults.
+		d := ResolveDefaults(&config.AskClaudeConfig{AllowFullMode: ptr(false)})
+		equal(t, d.AllowFull, false)
+		equal(t, props(&config.AskClaudeConfig{AllowFullMode: ptr(false)})["mode"]["enum"], []string{"read", "none"})
+	})
 	t.Run("keeps the package default true for a null or omitted allowFullMode", func(t *testing.T) {
 		equal(t, ResolveDefaults(&config.AskClaudeConfig{}).AllowFull, true)
 		equal(t, ResolveDefaults(nil).AllowFull, true)
@@ -161,28 +165,11 @@ func TestFullModeGatedByAllowFull(t *testing.T) {
 }
 
 func TestDisallowedTools(t *testing.T) {
-	has := func(mode Mode, tool string) bool {
-		for _, d := range DisallowedTools(mode) {
-			if d == tool {
-				return true
-			}
-		}
-		return false
-	}
-	for _, mode := range []Mode{ModeFull, ModeRead, ModeNone} {
-		if !has(mode, "AskUserQuestion") || !has(mode, "ScheduleWakeup") {
-			t.Fatalf("%s does not block the always-blocked tools", mode)
-		}
-	}
-	if has(ModeFull, "Write") || has(ModeFull, "Bash") {
-		t.Fatal("full blocks write or bash")
-	}
-	if !has(ModeRead, "Write") || !has(ModeRead, "Bash") || has(ModeRead, "Read") || has(ModeRead, "Grep") {
-		t.Fatal("read is not the read-only built-ins")
-	}
-	for _, tool := range []string{"Read", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "Agent"} {
-		if !has(ModeNone, tool) {
-			t.Fatalf("none allows %s", tool)
-		}
-	}
+	blocked := []string{"AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "ToolSearch", "ScheduleWakeup"}
+	equal(t, DisallowedTools(ModeFull), blocked)
+	equal(t, DisallowedTools(ModeRead), append(append([]string{}, blocked...),
+		"Write", "Edit", "Bash", "NotebookEdit", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "TeamCreate", "TeamDelete"))
+	equal(t, DisallowedTools(ModeNone), append(append([]string{}, blocked...),
+		"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent", "NotebookEdit", "EnterWorktree", "ExitWorktree",
+		"CronCreate", "CronDelete", "TeamCreate", "TeamDelete", "WebFetch", "WebSearch"))
 }

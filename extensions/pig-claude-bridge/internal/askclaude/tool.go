@@ -59,21 +59,13 @@ func Definition(b *bridge.Bridge, cfg config.Config, agentDir string, host func(
 		Execute: func(ctx sdk.Context, params map[string]any) (result any, err error) {
 			start := time.Now()
 			prompt, _ := params["prompt"].(string)
-			defer func() {
-				if r := recover(); r != nil {
-					result, err = errorResult(prompt, start, fmt.Sprintf("claude bridge internal error: %v", r)), nil
-				}
-			}()
+			defer containPanic(prompt, start, &result, &err)
 			h := host(ctx)
-			if ctx.Mode() == "tui" && noticeShown.CompareAndSwap(false, true) {
-				h.Notify(deprecationNotice, "warning")
-				if err := config.MarkAskClaudeDeprecationNoticeShown(agentDir, time.Now().Format("2006-01-02")); err != nil {
-					h.Notify("AskClaude: cannot record the deprecation notice: "+err.Error(), "warning")
-				}
-			}
-			// Guard: circular delegation.
-			if ctx.ModelProvider() == providerName {
-				return sdk.ToolResult{Content: circularError, Details: map[string]any{"error": true}}, nil
+			showDeprecationNoticeOnce(&noticeShown, ctx.Mode(), h.Notify, func() error {
+				return config.MarkAskClaudeDeprecationNoticeShown(agentDir, time.Now().Format("2006-01-02"))
+			})
+			if circularResult := circularGuard(ctx.ModelProvider()); circularResult != nil {
+				return *circularResult, nil
 			}
 			modeArg := Unset
 			if v, present := params["mode"]; present {
@@ -90,6 +82,32 @@ func Definition(b *bridge.Bridge, cfg config.Config, agentDir string, host func(
 			return run(ctx, h, requestContext(ctx), b, d, conf, params, mode, isolated, start), nil
 		},
 	}
+}
+
+// containPanic turns a panic in Execute into an error result; call it deferred.
+func containPanic(prompt string, start time.Time, result *any, err *error) {
+	if r := recover(); r != nil {
+		*result, *err = errorResult(prompt, start, fmt.Sprintf("claude bridge internal error: %v", r)), nil
+	}
+}
+
+// showDeprecationNoticeOnce notifies and records the notice on the first call in the tui, never again.
+func showDeprecationNoticeOnce(shown *atomic.Bool, mode string, notify func(message, level string), mark func() error) {
+	if mode != "tui" || !shown.CompareAndSwap(false, true) {
+		return
+	}
+	notify(deprecationNotice, "warning")
+	if err := mark(); err != nil {
+		notify("AskClaude: cannot record the deprecation notice: "+err.Error(), "warning")
+	}
+}
+
+// circularGuard is the error result when the active provider is the bridge itself, else nil.
+func circularGuard(provider string) *sdk.ToolResult {
+	if provider != providerName {
+		return nil
+	}
+	return &sdk.ToolResult{Content: circularError, Details: map[string]any{"error": true}}
 }
 
 func recoverRender(lines *[]string, err *error) {

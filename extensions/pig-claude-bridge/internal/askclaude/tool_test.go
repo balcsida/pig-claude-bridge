@@ -1,9 +1,12 @@
 package askclaude
 
 import (
+	"errors"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	sdk "github.com/MichaelKinsy/PiG/extensions/sdk"
 
@@ -61,4 +64,57 @@ func TestRenderResult(t *testing.T) {
 			t.Fatalf("rendered %q", got)
 		}
 	})
+}
+
+func TestShowDeprecationNoticeOnce(t *testing.T) {
+	var notes []string
+	notify := func(m, l string) { notes = append(notes, l+": "+m) }
+	marks := 0
+	mark := func() error { marks++; return nil }
+
+	var shown atomic.Bool
+	showDeprecationNoticeOnce(&shown, "print", notify, mark)
+	if len(notes) != 0 || marks != 0 || shown.Load() {
+		t.Fatal("a non-tui call showed the notice")
+	}
+	showDeprecationNoticeOnce(&shown, "tui", notify, mark)
+	showDeprecationNoticeOnce(&shown, "tui", notify, mark)
+	equal(t, notes, []string{"warning: " + deprecationNotice})
+	equal(t, marks, 1)
+	if !shown.Load() {
+		t.Fatal("flag not set")
+	}
+
+	notes = nil
+	var fresh atomic.Bool
+	showDeprecationNoticeOnce(&fresh, "tui", notify, func() error { return errors.New("disk full") })
+	equal(t, notes, []string{"warning: " + deprecationNotice, "warning: AskClaude: cannot record the deprecation notice: disk full"})
+
+	notes = nil
+	var already atomic.Bool
+	already.Store(true)
+	showDeprecationNoticeOnce(&already, "tui", notify, mark)
+	equal(t, len(notes), 0)
+}
+
+func TestCircularGuard(t *testing.T) {
+	if circularGuard("anthropic") != nil {
+		t.Fatal("guard fired for another provider")
+	}
+	r := circularGuard("claude-bridge")
+	if r == nil || r.Content != circularError || r.Details.(map[string]any)["error"] != true {
+		t.Fatalf("result = %+v", r)
+	}
+}
+
+func TestContainPanic(t *testing.T) {
+	run := func() (result any, err error) {
+		defer containPanic("q", time.Now(), &result, &err)
+		panic("boom")
+	}
+	result, err := run()
+	res, ok := result.(sdk.ToolResult)
+	if err != nil || !ok || res.Content != "Error: claude bridge internal error: boom" || res.Details.(map[string]any)["error"] != true {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
 }

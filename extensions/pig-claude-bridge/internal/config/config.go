@@ -98,11 +98,27 @@ func decodeValidKeys(data []byte, cfg *Config) {
 			delete(raw, section.key)
 			var keys map[string]json.RawMessage
 			if json.Unmarshal(v, &keys) == nil {
+				if section.key == "askClaude" {
+					failClosed(keys)
+				}
 				decodeKeys(keys, section.dst)
 			}
 		}
 	}
 	decodeKeys(raw, cfg)
+}
+
+// failClosed replaces a mistyped mode gate with a value that denies: dropping it would
+// fall back to the permissive default (TS: any non-true allowFullMode denies, any non-string defaultMode resolves to "none").
+func failClosed(keys map[string]json.RawMessage) {
+	var b bool
+	var str string
+	if v, ok := keys["allowFullMode"]; ok && string(v) != "null" && json.Unmarshal(v, &b) != nil {
+		keys["allowFullMode"] = json.RawMessage("false")
+	}
+	if v, ok := keys["defaultMode"]; ok && string(v) != "null" && json.Unmarshal(v, &str) != nil {
+		keys["defaultMode"] = json.RawMessage(`"invalid"`)
+	}
 }
 
 // decodeKeys unmarshals each key into dst only if it decodes cleanly into a fresh value.

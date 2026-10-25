@@ -175,3 +175,24 @@ func TestLoad(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadFailsClosedForMistypedModeGates(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		want       AskClaudeConfig
+	}{
+		{"a non-boolean allowFullMode (string) denies full mode", `{"askClaude":{"allowFullMode":"false"}}`, AskClaudeConfig{AllowFullMode: ptr(false)}},
+		{"a non-boolean allowFullMode (number) denies full mode", `{"askClaude":{"allowFullMode":0}}`, AskClaudeConfig{AllowFullMode: ptr(false)}},
+		{"a null allowFullMode stays unset", `{"askClaude":{"allowFullMode":null}}`, AskClaudeConfig{}},
+		{"a non-string defaultMode becomes an unrecognised mode", `{"askClaude":{"defaultMode":5}}`, AskClaudeConfig{DefaultMode: ptr("invalid")}},
+		{"a null defaultMode stays unset", `{"askClaude":{"defaultMode":null}}`, AskClaudeConfig{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			agentDir, cwd := t.TempDir(), t.TempDir()
+			write(t, GlobalConfigPath(agentDir), c.body)
+			if got := Load(agentDir, cwd, configDirName).AskClaude; !reflect.DeepEqual(*got, c.want) {
+				t.Fatalf("got %+v, want %+v", *got, c.want)
+			}
+		})
+	}
+}
