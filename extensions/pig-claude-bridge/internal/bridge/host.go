@@ -49,7 +49,7 @@ type Bridge struct {
 	// historyRewritten holds real pi session ids only, never the "(none)" key.
 	historyRewritten map[string]struct{}
 	// contexts are the live queries armStaleContexts marks.
-	contexts map[*queryContext]struct{}
+	contexts map[*QueryContext]struct{}
 	// cwds maps a pi session id to its working directory.
 	cwds map[string]string
 	// pendingSummary is the pi session whose compaction summary is about to run.
@@ -68,7 +68,7 @@ func New(d Deps) *Bridge {
 		sessions:         map[string]SessionState{},
 		syncLocks:        map[string]*sync.Mutex{},
 		historyRewritten: map[string]struct{}{},
-		contexts:         map[*queryContext]struct{}{},
+		contexts:         map[*QueryContext]struct{}{},
 		cwds:             map[string]string{},
 	}
 }

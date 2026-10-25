@@ -47,15 +47,15 @@ func (b *Bridge) historyRewrittenFor(piSessionID string) bool {
 	return ok
 }
 
-func (b *Bridge) addContext(piSessionID string) *queryContext {
+func (b *Bridge) addContext(piSessionID string) *QueryContext {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	c := &queryContext{piSessionID: piSessionID}
+	c := &QueryContext{piSessionID: piSessionID}
 	b.contexts[c] = struct{}{}
 	return c
 }
 
-func (b *Bridge) isStale(c *queryContext) bool {
+func (b *Bridge) isStale(c *QueryContext) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return c.historyStale

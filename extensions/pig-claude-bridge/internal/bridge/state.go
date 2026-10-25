@@ -25,12 +25,6 @@ type SessionState struct {
 	markSeq uint64
 }
 
-// queryContext is the part of a live query that history-rewrite marking touches.
-type queryContext struct {
-	piSessionID  string
-	historyStale bool
-}
-
 // noSession is the key for calls with no pi session id; they share one mirror.
 const noSession = "(none)"
 
