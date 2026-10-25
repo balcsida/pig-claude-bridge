@@ -293,3 +293,61 @@ func TestDeleteRejectsUnsafeSessionID(t *testing.T) {
 		t.Fatalf("session removed by rejected Delete: %v", err)
 	}
 }
+
+func TestImportSplitsUserArray(t *testing.T) {
+	s, _ := newSession(t)
+	msgs := []Message{
+		{Role: "user", Content: "q"},
+		{Role: "assistant", Content: "plain"},
+		{Role: "assistant", Content: []Block{ToolUseBlock{Type: "tool_use", ID: "t1", Name: "X", Input: map[string]any{}}}},
+		{Role: "user", Content: []Block{TextBlock{Type: "text", Text: "after"}, ToolResultBlock{Type: "tool_result", ToolUseID: "t1", Content: "ok"}}},
+	}
+	if err := s.ImportMessages(msgs, nil); err != nil {
+		t.Fatal(err)
+	}
+	recs := s.Records()
+	if len(recs) != 5 {
+		t.Fatalf("got %d records", len(recs))
+	}
+	content := func(i int) any { return parse(t, recs[i])["message"].(map[string]any)["content"] }
+	if content(0) != "q" {
+		t.Fatalf("user string: %v", content(0))
+	}
+	if c := content(1).([]any); len(c) != 1 || c[0].(map[string]any)["text"] != "plain" {
+		t.Fatalf("assistant string not wrapped: %v", c)
+	}
+	if c := content(3).([]any); len(c) != 1 || c[0].(map[string]any)["type"] != "tool_result" {
+		t.Fatalf("tool results record: %v", c)
+	}
+	if c := content(4).([]any); len(c) != 1 || c[0].(map[string]any)["type"] != "text" {
+		t.Fatalf("remaining blocks record: %v", c)
+	}
+}
+
+func TestImportPlacesAttachmentsAfterIndex(t *testing.T) {
+	s, _ := newSession(t)
+	msgs := []Message{
+		{Role: "assistant", Content: []Block{ToolUseBlock{Type: "tool_use", ID: "t1", Name: "X", Input: map[string]any{}}}},
+		{Role: "user", Content: "next"},
+	}
+	atts := []ImportAttachment{
+		{AfterIndex: 0, Attachment: map[string]any{"type": "a0"}},
+		{AfterIndex: 1, Attachment: map[string]any{"type": "a1"}},
+		{AfterIndex: 9, Attachment: map[string]any{"type": "out-of-range"}},
+	}
+	if err := s.ImportMessages(msgs, atts); err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, r := range s.Records() {
+		m := parse(t, r)
+		k := m["type"].(string)
+		if k == "attachment" {
+			k += ":" + m["attachment"].(map[string]any)["type"].(string)
+		}
+		kinds = append(kinds, k)
+	}
+	if want := []string{"assistant", "attachment:a0", "user", "user", "attachment:a1"}; !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("records = %v, want %v", kinds, want)
+	}
+}

@@ -418,3 +418,63 @@ func generateSlug() (string, error) {
 	}
 	return a + "-" + b + "-" + n, nil
 }
+
+// ImportMessages repairs msgs and adds them to the session, dispatching by
+// role and content type as the library's importMessages does. Each attachment
+// follows the record(s) of the message whose original index is AfterIndex;
+// out-of-range attachments are skipped, as the library does (it only warns).
+func (s *Session) ImportMessages(msgs []Message, attachments []ImportAttachment) error {
+	repaired, origin := RepairWithOrigin(msgs)
+	following := map[int][]ImportAttachment{}
+	for _, a := range attachments {
+		if a.AfterIndex >= 0 && a.AfterIndex < len(msgs) {
+			following[a.AfterIndex] = append(following[a.AfterIndex], a)
+		}
+	}
+	for i, msg := range repaired {
+		if err := s.importMessage(msg); err != nil {
+			return fmt.Errorf("ccsession: import message %d: %w", i, err)
+		}
+		if origin[i] < 0 {
+			continue
+		}
+		for _, a := range following[origin[i]] {
+			if err := s.AddAttachment(a.Attachment); err != nil {
+				return fmt.Errorf("ccsession: import attachment after message %d: %w", origin[i], err)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Session) importMessage(msg Message) error {
+	if msg.Role == "assistant" {
+		if text, ok := msg.Content.(string); ok {
+			return s.AddAssistantMessage([]Block{TextBlock{Type: "text", Text: text}}, "")
+		}
+		blocks, _ := msg.Content.([]Block)
+		return s.AddAssistantMessage(blocks, "")
+	}
+	blocks, ok := msg.Content.([]Block)
+	if !ok {
+		return s.AddUserMessage(msg.Content)
+	}
+	var results []ToolResultBlock
+	var rest []Block
+	for _, b := range blocks {
+		if tr, ok := b.(ToolResultBlock); ok {
+			results = append(results, tr)
+		} else {
+			rest = append(rest, b)
+		}
+	}
+	if len(results) > 0 {
+		if err := s.AddToolResults(results); err != nil {
+			return err
+		}
+	}
+	if len(rest) > 0 {
+		return s.AddUserMessage(rest)
+	}
+	return nil
+}
