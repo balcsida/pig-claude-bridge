@@ -179,7 +179,9 @@ per test; SKIP rows are separate. The temp agent dirs of the compaction tests ca
 | `TestIntBranchSummary` | PASS | 19.9 |
 | `TestIntCompactAutoThreshold` | PASS (one threshold compaction, tokensBefore 14953) | 57.0 |
 | `TestIntCompactMidturnRebuild` | PASS (after Finding 1 fix: tokens 81303 before the compaction, 12710 after) | 64.9 |
-| `TestIntSessionRebuild` | not ported (Finding 2) | - |
+| `TestDeleteSessionPlusCreateSessionSessionIdPreservedAcrossFullWipe` (`internal/ccproto/live_rebuild_test.go`, case 2) | PASS | 12.8 |
+| `TestRebuildOverCCWrittenToolUseRecordsResolvesCleanly` (same file, case 3) | PASS | 18.6 |
+| `TestDeleteSessionWipesTheCompanionDirectory` (same file, case 4, offline) | PASS | 0.0 |
 | deadlock check over the run's logs (10 debug logs) | no bridge deadlock warnings | 0 |
 
 SKIP rows:
@@ -194,8 +196,13 @@ Findings:
    (`session_tree` is bare there too, so it was already right). The bridge now logs
    `session_compact:threshold:willRetry=false: marking needsRebuild on session <id8>`; the regex stayed verbatim and the
    test passed on its one rerun.
-2. `int-session-rebuild.mjs` is not an RPC test: it drives `cc-session-io` and the Agent SDK `query` directly. It is
-   not ported pending a decision (see the task report).
+2. `int-session-rebuild.mjs` is not an RPC test (cc-session-io plus the Agent SDK, no pi), so its four cases live beside the
+   contract tests in `extensions/pig-claude-bridge/internal/ccproto/live_rebuild_test.go` (`-tags live`, run with
+   `go test -race -tags live -count=1 -run 'TestDeleteSessionPlusCreateSession|TestRebuildOverCCWritten|TestDeleteSessionWipes' ./internal/ccproto/`).
+   Case 1 (openSession + clear + re-add) is not duplicated: `ccsession` has no Open+Clear primitive, and
+   `TestResumeRereadsTheJSONLFromDiskOnEveryCall` already asserts that a rewritten session file is what the next resume
+   sees with no stale content. Case 4: `ccsession.Delete` already removes the companion directory, no parity gap.
+   These three add to the 22 contract tests counted above (that run predates them).
 
 ## Footprint *(Task 25)*
 
