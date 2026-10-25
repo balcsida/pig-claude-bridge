@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/convert"
 )
@@ -71,6 +72,8 @@ type Capture struct {
 	// Source is the bridge boundary that last recorded this key (before_agent_start | agent_start | turn_start).
 	Source    string
 	Inherited []InheritedPrompt
+	// mu is the owning registry's mutex: Record updates a node in place, so projections read under it.
+	mu *sync.Mutex
 }
 
 // Match is one known key sharing a prefix with an unresolved prompt.
@@ -127,6 +130,7 @@ func (c *Captures) Record(systemPrompt string, in Input, source string) {
 	if capture == nil {
 		capture = &Capture{AssembledPrompt: systemPrompt}
 	}
+	capture.mu = &c.mu
 	customChanged := existing == nil || existing.Custom != in.Custom
 
 	capture.Custom = in.Custom
@@ -212,7 +216,7 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 		// A query that is a recorded key minus its tail is the signature of pi#5581:
 		// an extension-triggered idle turn skips before_agent_start.
 		for _, m := range matches {
-			if m.FirstDivergent == len(systemPrompt) && len(m.Key) > len(systemPrompt) {
+			if strings.HasPrefix(m.Key, systemPrompt) && len(m.Key) > len(systemPrompt) {
 				source := m.Source
 				if source == "" {
 					source = "an unknown boundary"
@@ -222,13 +226,13 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 					"That shape matches pi#5581: an extension-triggered idle turn (sendMessage with triggerTurn) skips before_agent_start, "+
 					"so the prompt lacks that turn's extension additions. The turn fails; the next user-typed turn resolves normally. "+
 					"Workaround: when idle, send a user message instead of triggerTurn.",
-					len(systemPrompt), len(m.Key), source, len(m.Key)-len(systemPrompt))
+					utf16Len(systemPrompt), utf16Len(m.Key), source, utf16Len(m.Key[len(systemPrompt):]))
 			}
 		}
 		divergent, keyLen, recorded := "?", 0, ""
 		if len(matches) > 0 {
 			divergent = fmt.Sprint(matches[0].FirstDivergent)
-			keyLen = len(matches[0].Key)
+			keyLen = utf16Len(matches[0].Key)
 			if matches[0].Source != "" {
 				recorded = ", last recorded at " + matches[0].Source
 			}
@@ -241,12 +245,12 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 			"Otherwise an extension loaded after claude-bridge rewrote the system prompt from before_agent_start — "+
 			"one that wraps it is fine, one that rebuilds or strips it leaves nothing to match — "+
 			"or pi rebuilt the prompt outside before_agent_start (a late-registered tool or fresh resource discovery).",
-			len(systemPrompt), len(c.byKey), divergent, keyLen, recorded)
+			utf16Len(systemPrompt), len(c.byKey), divergent, keyLen, recorded)
 	}
 
 	// Custom is the prompt itself and the edges keep their original offsets, so
 	// projectCustom substitutes the embedded captures in place.
-	return &Capture{AssembledPrompt: systemPrompt, Input: Input{Custom: systemPrompt}, Inherited: embedded}, nil
+	return &Capture{AssembledPrompt: systemPrompt, Input: Input{Custom: systemPrompt}, Inherited: embedded, mu: &c.mu}, nil
 }
 
 // closestKnown returns the longest shared-prefix matches, best first.
@@ -259,12 +263,15 @@ func (c *Captures) closestKnown(systemPrompt string) []Match {
 		for i < limit && key[i] == systemPrompt[i] {
 			i++
 		}
+		for i < limit && !utf8.RuneStart(key[i]) {
+			i--
+		}
 		if i >= shared {
 			if i > shared {
 				shared = i
 				matches = matches[:0]
 			}
-			matches = append(matches, Match{Key: key, FirstDivergent: i, Source: c.byKey[key].Source})
+			matches = append(matches, Match{Key: key, FirstDivergent: utf16Len(key[:i]), Source: c.byKey[key].Source})
 		}
 	}
 	return matches
@@ -353,6 +360,11 @@ func sortStable[T any](s []T, less func(a, b T) bool) {
 // CollectPromptSkills returns the skills visible through inherited prompts,
 // ancestor first and once per file.
 func CollectPromptSkills(capture *Capture) []map[string]any {
+	defer capture.lock()()
+	return collectPromptSkills(capture)
+}
+
+func collectPromptSkills(capture *Capture) []map[string]any {
 	var result []map[string]any
 	seenPaths := map[string]bool{}
 	visited := map[*Capture]bool{}
@@ -391,7 +403,29 @@ type promptPart struct{ label, text string }
 // in the refusal text. The text is empty when there is nothing to append; err
 // carries the refusal for Pi's harness text or both documentation paths.
 func ProjectPromptCapture(capture *Capture, readTool string, debugLogPath string) (appendText string, err error) {
+	defer capture.lock()()
 	return projectCapture(capture, readTool, debugLogPath, map[*Capture]bool{})
+}
+
+// lock takes the registry mutex and returns the unlock; a hand-built Capture has none.
+func (c *Capture) lock() func() {
+	if c.mu == nil {
+		return func() {}
+	}
+	c.mu.Lock()
+	return c.mu.Unlock
+}
+
+// utf16Len is JavaScript's String.prototype.length, which the diagnostic texts report.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r >= 0x10000 {
+			n++
+		}
+	}
+	return n
 }
 
 var errCyclic = errors.New("Cyclic prompt inheritance")
@@ -405,7 +439,7 @@ func projectCapture(capture *Capture, readTool, debugLogPath string, visiting ma
 
 	inheritedSkillPaths := map[string]bool{}
 	for _, edge := range capture.Inherited {
-		for _, skill := range CollectPromptSkills(edge.Parent) {
+		for _, skill := range collectPromptSkills(edge.Parent) {
 			path, _ := skill["filePath"].(string)
 			inheritedSkillPaths[path] = true
 		}
@@ -465,7 +499,7 @@ func assertSendablePrompt(parts []promptPart, capture *Capture, debugLogPath str
 	for _, p := range parts {
 		for _, marker := range append([]string{PiPreamble}, PigHarnessTexts...) {
 			if offset := harnessAtLineStart(p.text, marker); offset != -1 {
-				findings = append(findings, fmt.Sprintf("pi's preamble (\"%s\") in %s, at offset %d of %d chars", marker, p.label, offset, len(p.text)))
+				findings = append(findings, fmt.Sprintf("pi's preamble (\"%s\") in %s, at offset %d of %d chars", marker, p.label, utf16Len(p.text[:offset]), utf16Len(p.text)))
 			}
 		}
 		// The pair has to co-occur in one part; the two phrases split across parts are not detected.

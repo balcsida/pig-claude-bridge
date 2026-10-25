@@ -535,3 +535,73 @@ func TestPromptGuard(t *testing.T) {
 		}
 	})
 }
+
+func TestConcurrentProjection(t *testing.T) {
+	t.Run("projects a child while its parent is re-recorded", func(t *testing.T) {
+		c := NewCaptures(0, nil)
+		c.Record(parentKey, Input{ContextFiles: agents("rules"), Skills: []map[string]any{skill("browser")}}, "")
+		c.Record(childKey, Input{Custom: parentKey + childSuffix}, "")
+		derived, err := c.ResolveOrDerive("wrap\n" + parentKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if derived.mu != &c.mu {
+			t.Fatal("a derived capture must share the registry mutex")
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				c.Record(parentKey, Input{ContextFiles: agents(fmt.Sprint("rules ", i)), Skills: []map[string]any{skill("browser")}}, "agent_start")
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			child, _ := c.Resolve(childKey)
+			for i := 0; i < 300; i++ {
+				if _, err := ProjectPromptCapture(child, "mcp", debugPath); err != nil {
+					t.Error(err)
+					return
+				}
+				_, _ = ProjectPromptCapture(derived, "mcp", debugPath)
+				CollectPromptSkills(child)
+			}
+		}()
+		wg.Wait()
+	})
+}
+
+func TestDiagnosticUnits(t *testing.T) {
+	t.Run("counts offsets and lengths in UTF-16 units", func(t *testing.T) {
+		// "é" is 2 bytes and 1 unit; "😀" is 4 bytes and 2 units.
+		c := NewCaptures(0, nil)
+		c.Record("é😀-same-X", Input{}, "")
+		_, err := c.ResolveOrDerive("é😀-same-Y!")
+		if err == nil {
+			t.Fatal("want error")
+		}
+		mustMatch(t, `this 11-char system prompt`, err.Error())
+		mustMatch(t, `diverges at offset 9 \(10-char key`, err.Error())
+
+		c2 := NewCaptures(0, nil)
+		c2.Record("é", Input{}, "")
+		_, err = c2.ResolveOrDerive("è")
+		if err == nil {
+			t.Fatal("want error")
+		}
+		mustMatch(t, `diverges at offset 0 \(1-char key`, err.Error())
+
+		c3 := NewCaptures(0, nil)
+		c3.Record("é😀-tail", Input{}, "turn_start")
+		_, err = c3.ResolveOrDerive("é😀")
+		mustMatch(t, `this 3-char prompt is the 8-char capture.* final 5 chars missing`, err.Error())
+
+		c4 := NewCaptures(0, nil)
+		c4.Record("g", Input{Custom: "é😀\n" + PiPreamble}, "x")
+		g, _ := c4.Resolve("g")
+		_, err = ProjectPromptCapture(g, "none", debugPath)
+		mustMatch(t, `at offset 4 of 58 chars`, err.Error())
+	})
+}
