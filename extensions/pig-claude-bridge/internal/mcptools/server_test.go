@@ -237,8 +237,7 @@ func TestToolInvocation(t *testing.T) {
 			return convert.McpResult{Content: convert.McpContent{{"type": "text", "text": "ok"}}, ToolCallID: "toolu_x"}, nil
 		}}})
 		r := c.callTool("alpha", "toolu_x", nil)
-		// isError is omitted when false (the Go result cannot tell false from undefined).
-		if !reflect.DeepEqual(keys(r.Result), []string{"content"}) {
+		if !reflect.DeepEqual(keys(r.Result), []string{"content", "isError"}) {
 			t.Fatalf("keys %v", keys(r.Result))
 		}
 	})
@@ -268,6 +267,9 @@ func TestToolsCallMissingMetaErrors(t *testing.T) {
 		t.Fatalf("error %+v ran=%v", r.Error, ran)
 	}
 	if r := c.callTool("nope", "toolu_1", nil); r.Error == nil || r.Error.Message != "Unknown tool: nope" {
+		t.Fatalf("error %+v", r.Error)
+	}
+	if r := c.request("tools/call", map[string]any{"arguments": map[string]any{}}); r.Error == nil || r.Error.Code != -32602 || !strings.HasPrefix(r.Error.Message, "Invalid tools/call request: ") {
 		t.Fatalf("error %+v", r.Error)
 	}
 }

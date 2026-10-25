@@ -22,6 +22,7 @@ var supportedProtocolVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26
 
 const (
 	codeMethodNotFound = -32601
+	codeInvalidParams  = -32602
 	codeInternalError  = -32603
 )
 
@@ -150,7 +151,7 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, error) 
 		Meta      map[string]any `json:"_meta"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil || p.Name == "" {
-		return nil, fmt.Errorf("Invalid tools/call params")
+		return nil, &rpcError{codeInvalidParams, "Invalid tools/call request: params must be an object with a tool name"}
 	}
 	tool, ok := s.byName[p.Name]
 	if !ok {
@@ -171,9 +172,5 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, error) 
 	if content == nil {
 		content = convert.McpContent{}
 	}
-	out := map[string]any{"content": content}
-	if res.IsError {
-		out["isError"] = true
-	}
-	return out, nil
+	return map[string]any{"content": content, "isError": res.IsError}, nil
 }
