@@ -292,3 +292,35 @@ func TestWaitIsBoundedWhenGrandchildHoldsPipes(t *testing.T) {
 		t.Fatal("Frames not closed")
 	}
 }
+
+func TestStartCloseCyclesDoNotLeakDescriptors(t *testing.T) {
+	count := func() int {
+		entries, err := os.ReadDir("/dev/fd")
+		if err != nil {
+			t.Skipf("no /dev/fd: %v", err)
+		}
+		return len(entries)
+	}
+	cycle := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		p, err := Start(ctx, Options{Executable: fakeBin, Cwd: t.TempDir()}, Handlers{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+		<-p.Done()
+	}
+	cycle() // warm up runtime-owned descriptors
+	first := count()
+	for i := 0; i < 10; i++ {
+		cycle()
+	}
+	last := count()
+	t.Logf("open descriptors: first %d, last %d", first, last)
+	if last > first+2 {
+		t.Fatalf("descriptors grew from %d to %d over 10 cycles", first, last)
+	}
+}

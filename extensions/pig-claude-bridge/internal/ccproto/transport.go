@@ -94,6 +94,7 @@ type Process struct {
 	frames    chan json.RawMessage
 	abandon   chan struct{}
 	abandonMu sync.Once
+	closeOnce sync.Once
 
 	stdoutDone, stderrDone chan struct{}
 	done                   chan struct{}
@@ -378,10 +379,11 @@ func (p *Process) readStderr(r io.Reader) {
 // publishes the exit error and closes done.
 func (p *Process) wait() {
 	state, err := p.cmd.Process.Wait()
-	timer := time.AfterFunc(DrainGrace, func() { _ = p.stdout.Close(); _ = p.stderr.Close() })
+	timer := time.AfterFunc(DrainGrace, p.closeReaders)
 	<-p.stdoutDone
 	<-p.stderrDone
 	timer.Stop()
+	p.closeReaders()
 	_ = p.stdin.Close()
 	p.cancel()
 	trackedMu.Lock()
@@ -391,6 +393,11 @@ func (p *Process) wait() {
 	p.waitErr = p.exitError(state, err)
 	p.mu.Unlock()
 	close(p.done)
+}
+
+// closeReaders closes the pipe read ends exactly once (cmd.Wait is not used, so nothing else does).
+func (p *Process) closeReaders() {
+	p.closeOnce.Do(func() { _ = p.stdout.Close(); _ = p.stderr.Close() })
 }
 
 // exitError renders the SDK's texts; the caller holds p.mu.
