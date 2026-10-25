@@ -420,8 +420,8 @@ func TestAgentStartCaptureDocumentedGaps(t *testing.T) {
 
 // The TypeScript drives a real pi session, extension runner and native summarizer;
 // PiG has no counterpart in this test, so the adaptation asserts the same
-// contract at the bridge's boundary: the bridge never starts a provider query for
-// a summary, never owns the compaction (its handlers return nothing), and records
+// contract at the bridge's boundary: the bridge serves each summary on an isolated
+// process (never a provider query), never owns the compaction (its handlers return nothing), and records
 // the rewrite only when a compaction completed.
 func TestBridgeLeavesCompactionAndBranchSummaryOwnershipToPiAndOtherExtensions(t *testing.T) {
 	t.Run("the before-compact and before-tree hooks only remember the session", func(t *testing.T) {
@@ -460,6 +460,7 @@ func TestBridgeLeavesCompactionAndBranchSummaryOwnershipToPiAndOtherExtensions(t
 			host := &fakeHost{sessionID: "pi-compaction"}
 			h.b.OnSessionBeforeCompact(host)
 			for i := 0; i < o.summaries; i++ {
+				h.script(replies("summary"))
 				stream, err := h.b.StreamSimple(context.Background(), host, testModel,
 					map[string]any{"systemPrompt": "summarization prompt", "messages": msgs(userMsg("summarize"))},
 					map[string]any{"sessionId": "pi-compaction", "cacheRetention": "none"})
@@ -471,8 +472,18 @@ func TestBridgeLeavesCompactionAndBranchSummaryOwnershipToPiAndOtherExtensions(t
 			if o.completed {
 				h.b.OnSessionCompact(host)
 			}
-			if len(h.spawns()) != 0 {
-				t.Fatalf("spawns = %d, a summary never goes through the provider query", len(h.spawns()))
+			// Every summary is one isolated process: no session persisted, no tools, closed.
+			spawns := h.spawns()
+			if len(spawns) != o.summaries {
+				t.Fatalf("spawns = %d, want %d isolated calls", len(spawns), o.summaries)
+			}
+			for _, s := range spawns {
+				if !s.opts.NoSessionPersistence || len(s.opts.Tools) != 0 || !s.opts.ToolsSet {
+					t.Fatalf("opts = %+v, want persistSession false and tools []", s.opts)
+				}
+				if _, closes, _ := s.client.counts(); closes == 0 {
+					t.Fatal("an isolated client was left open")
+				}
 			}
 			if got := h.b.historyRewrittenFor("pi-compaction"); got != o.completed {
 				t.Fatalf("history rewrite recorded = %t, want %t", got, o.completed)

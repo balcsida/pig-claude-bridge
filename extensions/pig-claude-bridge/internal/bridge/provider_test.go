@@ -1022,10 +1022,14 @@ func TestStreamSimpleFailuresEndTheTurnOnTheStream(t *testing.T) {
 
 	t.Run("a cacheRetention none call is routed to the isolated query", func(t *testing.T) {
 		h := newProviderHarness(t, nil)
+		h.script(replies("the summary"))
 		stream, _ := h.b.StreamSimple(context.Background(), h.host, testModel, map[string]any{"messages": msgs(userMsg("summarize"))}, map[string]any{"cacheRetention": "none"})
 		reply := finalOf(t, stream)
-		if reply["errorMessage"] != "isolated queries are implemented in Task 21" || len(h.spawns()) != 0 {
+		if content, _ := reply["content"].([]any); reply["stopReason"] != "stop" || len(content) != 1 || obj(content[0])["text"] != "the summary" {
 			t.Fatalf("reply = %v", reply)
+		}
+		if spawns := h.spawns(); len(spawns) != 1 || !spawns[0].opts.NoSessionPersistence {
+			t.Fatalf("spawns = %v", spawns)
 		}
 	})
 }
