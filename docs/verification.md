@@ -310,7 +310,9 @@ Failed: 0
 | direction | status |
 |---|---|
 | TypeScript-recorded session resumed by this port | PASS (above) |
-| pig-created session resumed by the TypeScript bridge under pi | **pending: the controller's manual check** (not run by this task; pi is not run here) |
+| pig-created session resumed by the TypeScript bridge under pi | PASS (by hand, 2026-10-25; below) |
+
+Reverse direction, 2026-10-25, by hand: a session created by this port under pig 0.5.3+1.4.0.74f46864 (`pig -ne -e <repo> --mode json -p …`, fresh `PIG_HOME`/`PIG_CODING_AGENT_DIR`, sessions enabled; a 6-record version-3 session file) was resumed by the TypeScript bridge under pi 1.4.0 (`pi -ne -e <pi-claude-bridge clone> --session <that file> --model claude-bridge/claude-haiku-4-5 --mode json -p …`, fresh `PI_CODING_AGENT_DIR`, claude 2.1.310). **PASS.** The TypeScript bridge logged `Case 2: first turn with 2 prior messages → session 9fa3dd37, 2 records` and `syncResult: path=rebuild sessionId=9fa3dd37-… priors=2`; the rebuilt Claude Code session file under the project hash starts with a `user` record; the second turn's answer quoted the first turn's content ("I read your first message, which contained "PERIWINKLE-42""); the pi session file grew from 6 to 9 records; neither debug log contains a `prompt-capture:` line. Both directions therefore hold: the TypeScript-era history is rebuilt by this port (forward, `scripts/live/int-cross-resume.sh`) and a pig-written session is rebuilt by the TypeScript bridge (reverse).
 
 ## Prompt text *(Task 25)*
 
