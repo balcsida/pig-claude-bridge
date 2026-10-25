@@ -523,6 +523,10 @@ func TestFinalizedTurnIsImmutable(t *testing.T) {
 		}
 	}
 
+	// The teardown paths (abort, SDK exception, error result after a tool call) are
+	// covered by Task 20's provider-level tests. By the time these run the stream is
+	// detached, so they pin only the deep-copy property: the delivered message is a
+	// copy that later writes to turnOutput cannot reach.
 	for name, fail := range map[string]func(b *Bridge, q *QueryContext){
 		"an abort": func(b *Bridge, q *QueryContext) {
 			q.turnOutput["stopReason"] = "aborted"
@@ -581,8 +585,14 @@ func TestFinalizedTurnIsImmutable(t *testing.T) {
 			t.Errorf("reply = %v", reply)
 		}
 		events := drain(stream)
-		if last := events[len(events)-1]; last["type"] != "error" || last["reason"] != "error" {
+		last := events[len(events)-1]
+		if last["type"] != "error" || last["reason"] != "error" {
 			t.Errorf("last event = %v", last)
+		}
+		// The host's error event carries the message in "error" (no "partial"): the text so far survives.
+		errMsg := last["error"].(map[string]any)
+		if txt := errMsg["content"].([]any)[0].(map[string]any)["text"]; txt != "partial" || errMsg["errorMessage"] != "API Error: Overloaded" {
+			t.Errorf("error message = %v", errMsg)
 		}
 		if q.currentPiStream != nil {
 			t.Error("stream still attached")
@@ -681,5 +691,143 @@ func TestSyntheticAssistantMessageEmitsNoEvents(t *testing.T) {
 	}
 	if usageOf(q.turnOutput)["input"] != 3 {
 		t.Errorf("input = %v", usageOf(q.turnOutput)["input"])
+	}
+}
+
+// ev is an expected event: type and contentIndex (-1 where the event has none).
+type ev struct {
+	typ string
+	idx int
+}
+
+func rep(typ string, idx, n int) []ev {
+	out := make([]ev, n)
+	for i := range out {
+		out[i] = ev{typ, idx}
+	}
+	return out
+}
+
+func seq(parts ...any) []ev {
+	var out []ev
+	for _, p := range parts {
+		switch v := p.(type) {
+		case ev:
+			out = append(out, v)
+		case []ev:
+			out = append(out, v...)
+		}
+	}
+	return out
+}
+
+func gotSeq(events []map[string]any) []ev {
+	out := make([]ev, len(events))
+	for i, e := range events {
+		idx := -1
+		if n, ok := e["contentIndex"]; ok {
+			idx = n.(int)
+		}
+		out[i] = ev{e["type"].(string), idx}
+	}
+	return out
+}
+
+// toolCallEnds are the toolcall_end events' toolCall.arguments, in order.
+func toolCallEnds(events []map[string]any) []any {
+	var out []any
+	for _, e := range events {
+		if e["type"] == "toolcall_end" {
+			out = append(out, e["toolCall"].(map[string]any)["arguments"])
+		}
+	}
+	return out
+}
+
+// The thinking-delta counts are the thinking_delta frames before the first message_stop in each fixture.
+func TestReplayExactEventSequences(t *testing.T) {
+	start := ev{"start", -1}
+	cases := []struct {
+		name, file string
+		want       []ev
+		args       []any
+		terminal   string
+	}{
+		{"text.jsonl", "text", seq(start, ev{"thinking_start", 0}, rep("thinking_delta", 0, 13), ev{"thinking_end", 0},
+			ev{"text_start", 1}, ev{"text_delta", 1}, ev{"text_end", 1}), nil, ""},
+		{"single-tool.jsonl", "single-tool", seq(start, ev{"thinking_start", 0}, rep("thinking_delta", 0, 12), ev{"thinking_end", 0},
+			ev{"toolcall_start", 1}, rep("toolcall_delta", 1, 4), ev{"toolcall_end", 1}, ev{"done", -1}),
+			[]any{map[string]any{"path": "one.txt"}}, "toolUse"},
+		{"parallel-tools.jsonl", "parallel-tools", seq(start, ev{"thinking_start", 0}, rep("thinking_delta", 0, 24), ev{"thinking_end", 0},
+			ev{"toolcall_start", 1}, rep("toolcall_delta", 1, 4), ev{"toolcall_end", 1},
+			ev{"toolcall_start", 2}, rep("toolcall_delta", 2, 4), ev{"toolcall_end", 2},
+			ev{"toolcall_start", 3}, rep("toolcall_delta", 3, 4), ev{"toolcall_end", 3}, ev{"done", -1}),
+			[]any{map[string]any{"path": "one.txt"}, map[string]any{"path": "two.txt"}, map[string]any{"path": "three.txt"}}, "toolUse"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, _, _ := newTestBridge(t, false)
+			q, _ := newStreamContext("read")
+			r := replayFrames(t, b, q, fixtureDir+c.file+".jsonl")
+			if got := gotSeq(r.Events); !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("events = %v\nwant     %v", got, c.want)
+			}
+			if got := toolCallEnds(r.Events); !reflect.DeepEqual(got, c.args) {
+				t.Errorf("toolcall_end arguments = %v, want %v", got, c.args)
+			}
+			if c.terminal != "" {
+				if done := r.Events[len(r.Events)-1]; done["reason"] != c.terminal || done["message"].(map[string]any)["stopReason"] != c.terminal {
+					t.Errorf("done = %v", done)
+				}
+			}
+			for _, e := range r.Events {
+				if e["type"] == "thinking_end" && e["content"] == "" {
+					t.Errorf("thinking_end carries no content")
+				}
+			}
+		})
+	}
+}
+
+func TestFallbackMessageEmitsExactEvents(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	q, stream := newStreamContext("bash")
+	play(t, b, q, fallbackMessage(t, "msg_fallback"))
+	events := drain(stream)
+
+	want := seq(ev{"start", -1},
+		ev{"thinking_start", 0}, ev{"thinking_delta", 0}, ev{"thinking_end", 0},
+		ev{"text_start", 1}, ev{"text_delta", 1}, ev{"text_end", 1},
+		ev{"toolcall_start", 2}, ev{"toolcall_end", 2},
+		ev{"toolcall_start", 3}, ev{"toolcall_end", 3},
+		ev{"done", -1})
+	if got := gotSeq(events); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v\nwant     %v", got, want)
+	}
+	byType := func(typ string, n int) map[string]any {
+		for _, e := range events {
+			if e["type"] == typ {
+				if n == 0 {
+					return e
+				}
+				n--
+			}
+		}
+		t.Fatalf("no %s event", typ)
+		return nil
+	}
+	if byType("thinking_delta", 0)["delta"] != "Let me look at both." || byType("thinking_end", 0)["content"] != "Let me look at both." {
+		t.Errorf("thinking events = %v / %v", byType("thinking_delta", 0), byType("thinking_end", 0))
+	}
+	if byType("text_delta", 0)["delta"] != "Reading the log." || byType("text_end", 0)["content"] != "Reading the log." {
+		t.Errorf("text events = %v / %v", byType("text_delta", 0), byType("text_end", 0))
+	}
+	// mapToolArgs gives bash its default timeout.
+	wantArgs := []any{map[string]any{"command": "ls", "timeout": 120}, map[string]any{"command": "pwd", "timeout": 120}}
+	if got := toolCallEnds(events); !reflect.DeepEqual(got, wantArgs) {
+		t.Errorf("toolcall_end arguments = %v", got)
+	}
+	if id := byType("toolcall_end", 1)["toolCall"].(map[string]any)["id"]; id != "toolu_b" {
+		t.Errorf("second call id = %v", id)
 	}
 }
