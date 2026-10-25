@@ -5,9 +5,12 @@ import (
 	"regexp"
 	"testing"
 
+	sdk "github.com/MichaelKinsy/PiG/extensions/sdk"
+
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/bridge"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/config"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/models"
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/promptcapture"
 )
 
 func TestExtensionFactoryReturnsNamedExtension(t *testing.T) {
@@ -42,5 +45,34 @@ func TestRegisteredModelsComeFromCatalog(t *testing.T) {
 	want := models.ApplyLongContext(models.BuildModels(models.Catalog()), models.LongContextSettings{Plan: "max"})
 	if !reflect.DeepEqual(list, want) {
 		t.Error("models do not reflect ApplyLongContext for plan max")
+	}
+}
+
+func TestBeforeAgentStartInputReadsPromptAndOrderedSections(t *testing.T) {
+	sections := &sdk.SystemPromptSections{}
+	sections.Set("zeta", "z")
+	sections.Set("alpha", "a")
+	data := map[string]any{
+		"systemPrompt":        "base prompt",
+		"systemPromptOptions": map[string]any{"cwd": "/p", "sections": sections},
+	}
+	prompt, options := beforeAgentStartInput(data)
+	if prompt != "base prompt" {
+		t.Errorf("prompt = %q", prompt)
+	}
+	want := []promptcapture.Section{{Name: "zeta", Text: "z"}, {Name: "alpha", Text: "a"}}
+	if !reflect.DeepEqual(options["sections"], want) {
+		t.Errorf("sections = %v, want %v", options["sections"], want)
+	}
+	if options["cwd"] != "/p" {
+		t.Errorf("cwd = %v", options["cwd"])
+	}
+}
+
+// A usable *sdk.SystemPrompt cannot be built outside the SDK (unexported fields, rendered through the host), so
+// a nil one only proves the typed case is taken without a panic and yields no text.
+func TestBeforeAgentStartInputAcceptsTypedSystemPrompt(t *testing.T) {
+	if prompt, _ := beforeAgentStartInput(map[string]any{"systemPrompt": (*sdk.SystemPrompt)(nil)}); prompt != "" {
+		t.Errorf("prompt = %q", prompt)
 	}
 }

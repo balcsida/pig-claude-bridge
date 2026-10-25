@@ -53,9 +53,14 @@ func requestContext(ctx sdk.Context) context.Context {
 	if sig := ctx.Signal(); sig != nil {
 		return sig
 	}
+	// Done() returns a different channel once the request completes and may be nil, so read it once up front.
+	done := ctx.Done()
+	if done == nil {
+		return context.Background()
+	}
 	goCtx, cancel := context.WithCancel(context.Background())
 	go func() {
-		<-ctx.Done()
+		<-done
 		cancel()
 	}()
 	return goCtx
@@ -81,6 +86,21 @@ func promptOptions(raw any) map[string]any {
 		out["sections"] = orderedSections(s)
 	}
 	return out
+}
+
+// beforeAgentStartInput extracts the prompt text and options from the event payload. Under SDK v0.5.3
+// data["systemPrompt"] is a *sdk.SystemPrompt, not a string; a plain string is accepted too.
+func beforeAgentStartInput(data map[string]any) (string, map[string]any) {
+	prompt := ""
+	switch sp := data["systemPrompt"].(type) {
+	case *sdk.SystemPrompt:
+		if sp != nil {
+			prompt, _ = sp.Get()
+		}
+	case string:
+		prompt = sp
+	}
+	return prompt, promptOptions(data["systemPromptOptions"])
 }
 
 func orderedSections(s sdk.SystemPromptSections) []promptcapture.Section {
@@ -137,8 +157,8 @@ func Extension() *sdk.Extension {
 		})
 	}
 	forward("before_agent_start", func(h bridge.Host, data map[string]any) {
-		prompt, _ := data["systemPrompt"].(string)
-		b.OnBeforeAgentStart(h, prompt, promptOptions(data["systemPromptOptions"]))
+		prompt, options := beforeAgentStartInput(data)
+		b.OnBeforeAgentStart(h, prompt, options)
 	})
 	forward("agent_start", func(h bridge.Host, _ map[string]any) { b.OnAgentStart(h) })
 	forward("turn_start", func(h bridge.Host, _ map[string]any) { b.OnTurnStart(h) })
