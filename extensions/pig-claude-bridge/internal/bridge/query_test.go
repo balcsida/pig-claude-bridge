@@ -255,7 +255,7 @@ func TestMakePromptStream(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
-	t.Run("first failure wins over a later generic one", func(t *testing.T) {
+	t.Run("keeps the first failure rather than the last", func(t *testing.T) {
 		ps := newPromptStream()
 		queued := pushAsync(ps, textMsg("queued"))
 		for {
