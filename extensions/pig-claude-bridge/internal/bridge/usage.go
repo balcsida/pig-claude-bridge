@@ -96,7 +96,9 @@ func updateUsage(output map[string]any, u SdkUsage, model map[string]any) UsageR
 }
 
 // calculateCost is pi-ai's calculateCost: per-million-token rates from the model's
-// cost fields. The bridge zeroes those rates, so real cost is zero.
+// cost fields. The bridge zeroes those rates, so real cost is zero. pi-ai's
+// cost.tiers and usage.cacheWrite1h are left out: with zero rates, and no 1h cache
+// writes reported by Claude Code, they give the same zeros.
 func calculateCost(model, usage map[string]any, input, out, cacheRead, cacheWrite int) {
 	rates, _ := model["cost"].(map[string]any)
 	per := func(rate any, tokens int) float64 {

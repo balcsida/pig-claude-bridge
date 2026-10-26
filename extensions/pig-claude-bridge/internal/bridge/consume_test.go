@@ -1397,7 +1397,7 @@ func TestATurnStillStreaming(t *testing.T) {
 			waitFor(t, "the text to stream", func() bool {
 				h.q.mu.Lock()
 				defer h.q.mu.Unlock()
-				blocks, _ := h.q.turnBlocksLocked()
+				blocks := h.q.blocksLocked()
 				return len(blocks) == 1 && str(obj(blocks[0])["text"]) == "partial"
 			})
 			h.client.emit(failure.frames...)

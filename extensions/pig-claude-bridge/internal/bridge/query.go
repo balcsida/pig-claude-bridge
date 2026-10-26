@@ -39,8 +39,9 @@ type QueryContext struct {
 	// Query-scoped.
 	activeQuery     ccproto.Client
 	currentPiStream *sdk.ModelEventStream
-	// model is the model of the turn in progress, set by resetTurnState; usage cost
-	// comes from its rates.
+	// model is the model the query started with (the TypeScript's consumeQuery
+	// model): usage cost and the served-window log use it, though a later call
+	// continuing the query can carry another one.
 	model map[string]any
 	// customToolNameToPi maps the SDK's tool names to pi's for this query.
 	customToolNameToPi map[string]string
@@ -102,28 +103,10 @@ func newQueryContext() *QueryContext {
 func (c *QueryContext) turnBlocks() ([]any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.turnBlocksLocked()
-}
-
-func (c *QueryContext) turnBlocksLocked() ([]any, error) {
 	if c.turnOutput == nil {
 		return nil, errors.New("turnBlocks accessed before resetTurnState")
 	}
-	blocks, _ := c.turnOutput["content"].([]any)
-	return blocks, nil
-}
-
-// appendTurnBlock adds a block to turnOutput.content (Go slices cannot be mutated
-// through a returned header, so appending goes through the context).
-func (c *QueryContext) appendTurnBlock(block any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	blocks, err := c.turnBlocksLocked()
-	if err != nil {
-		return err
-	}
-	c.turnOutput["content"] = append(blocks, block)
-	return nil
+	return c.blocksLocked(), nil
 }
 
 // releasePendingToolCalls answers every parked MCP handler with reason and drops
@@ -145,7 +128,6 @@ func (c *QueryContext) releasePendingToolCalls(reason string) {
 func (c *QueryContext) resetTurnState(model map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.model = model
 	c.turnOutput = newAssistantOutput(model, "", "stop", "")
 	c.turnStarted = false
 	c.turnSawStreamEvent = false

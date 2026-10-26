@@ -29,9 +29,9 @@ func TestQueryContextClass(t *testing.T) {
 		if err != nil || len(blocks) != 0 {
 			t.Fatalf("blocks = %v, err = %v", blocks, err)
 		}
-		if err := c.appendTurnBlock(map[string]any{"type": "text", "text": "hello"}); err != nil {
-			t.Fatal(err)
-		}
+		c.mu.Lock()
+		c.addBlockLocked(map[string]any{"type": "text", "text": "hello"})
+		c.mu.Unlock()
 		content := c.turnOutput["content"].([]any)
 		if len(content) != 1 || content[0].(map[string]any)["text"] != "hello" {
 			t.Fatalf("content = %v", content)

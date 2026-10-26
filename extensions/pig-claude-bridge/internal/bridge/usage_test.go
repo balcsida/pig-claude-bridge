@@ -146,3 +146,19 @@ func TestMapToolArgs(t *testing.T) {
 		t.Errorf("nil args = %v", got)
 	}
 }
+
+// As the TypeScript's consumeQuery, a query prices its usage with the model it started
+// with; a later call continuing it with another model changes only the message's model.
+func TestUsageCostUsesTheModelTheQueryStartedWith(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	q, _ := newStreamContext()
+	q.model = pricedModel
+	q.resetTurnState(testModel)
+	b.processStreamEvent(q, frame(t, `{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1","usage":{"input_tokens":3,"output_tokens":0}}}}`))
+	if cost := usageOf(q.turnOutput)["cost"].(map[string]any); cost["input"] != 3.0 {
+		t.Fatalf("cost = %v, want the start model's rates", cost)
+	}
+	if q.turnOutput["model"] != testModel["id"] {
+		t.Fatalf("message model = %v", q.turnOutput["model"])
+	}
+}

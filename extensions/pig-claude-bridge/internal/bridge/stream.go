@@ -38,7 +38,9 @@ func parsePartialJSON(s string) map[string]any {
 
 // deepCopy copies the JSON-shaped values assistant messages are made of. Events
 // carry copies because the SDK marshals them asynchronously while the message
-// keeps mutating.
+// keeps mutating. Strings are shared, so a copy costs the turn's blocks and keys,
+// not its text.
+// shortcut: every event copies the whole turn so far, O(events x blocks); share immutable blocks if long turns show up in profiles.
 func deepCopy(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
@@ -61,7 +63,7 @@ func obj(v any) map[string]any { m, _ := v.(map[string]any); return m }
 func str(v any) string         { s, _ := v.(string); return s }
 func list(v any) []any         { l, _ := v.([]any); return l }
 
-// markStreamComplete records that stream got its terminal event.
+// markStreamComplete records that stream got its terminal event. The caller holds q.mu.
 func (q *QueryContext) markStreamComplete(stream *sdk.ModelEventStream) {
 	if stream == nil {
 		return
@@ -164,7 +166,11 @@ func (b *Bridge) finalizeCurrentStream(q *QueryContext, stopReason string) {
 	if q.currentPiStream == nil || q.turnOutput == nil {
 		return
 	}
-	b.debugf("provider: finalizeCurrentStream called, stopReason=%s, stopReason=%v error=%v", stopReason, q.turnOutput["stopReason"], q.turnOutput["errorMessage"])
+	shown, _ := json.Marshal(struct {
+		StopReason any `json:"stopReason,omitempty"`
+		Error      any `json:"error,omitempty"`
+	}{q.turnOutput["stopReason"], q.turnOutput["errorMessage"]})
+	b.debugf("provider: finalizeCurrentStream called, stopReason=%s, turnOutput=%s", stopReason, shown)
 	q.ensureTurnStartedLocked()
 	if q.turnOutput["stopReason"] == "error" {
 		q.endStreamLocked(map[string]any{"type": "error", "reason": "error", "error": deepCopy(q.turnOutput)})

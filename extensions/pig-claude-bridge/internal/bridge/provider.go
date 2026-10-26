@@ -366,6 +366,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	b.claimCurrentPiStream(stream, "fresh-query", q, onResponse)
 	q.resetTurnState(model)
 	q.mu.Lock()
+	q.model = model
 	q.promptStream = promptStream
 	q.activeQuery = client
 	q.mu.Unlock()
