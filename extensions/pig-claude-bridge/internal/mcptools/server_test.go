@@ -123,6 +123,9 @@ func TestSchemaAdvertisement(t *testing.T) {
 		if !reflect.DeepEqual(keys(item["properties"].(map[string]any)), []string{"detail", "label"}) || !reflect.DeepEqual(item["required"], []any{"label"}) {
 			t.Fatalf("got %v", item)
 		}
+		if item["properties"].(map[string]any)["label"].(map[string]any)["description"] != "Short label" {
+			t.Fatal("nested description lost")
+		}
 	})
 	t.Run("preserves nested object properties, enums and required", func(t *testing.T) {
 		cfg := props["config"].(map[string]any)
@@ -131,6 +134,9 @@ func TestSchemaAdvertisement(t *testing.T) {
 		}
 		if !reflect.DeepEqual(cfg["properties"].(map[string]any)["mode"].(map[string]any)["enum"], []any{"single", "multi"}) {
 			t.Fatal("enum lost")
+		}
+		if cfg["properties"].(map[string]any)["retries"].(map[string]any)["type"] != "integer" {
+			t.Fatal("nested type lost")
 		}
 	})
 	t.Run("preserves anyOf branches", func(t *testing.T) {
@@ -142,44 +148,78 @@ func TestSchemaAdvertisement(t *testing.T) {
 }
 
 func TestCombinatorDescriptions(t *testing.T) {
-	list := func(schema map[string]any) map[string]any {
-		return listTools(t, []ToolDef{{Name: "union_tool", Description: "d", InputSchema: schema}})[0].(map[string]any)
+	list := func(schema map[string]any) (string, map[string]any) {
+		tool := listTools(t, []ToolDef{{Name: "union_tool", Description: "d", InputSchema: schema}})[0].(map[string]any)
+		return tool["description"].(string), tool["inputSchema"].(map[string]any)
 	}
-	t.Run("anyOf", func(t *testing.T) {
-		tool := list(map[string]any{
-			"type": "object", "required": []any{"operation"},
-			"properties": map[string]any{"operation": map[string]any{}, "input": map[string]any{}},
+	str := func(extra map[string]any) map[string]any {
+		s := map[string]any{"type": "string"}
+		for k, v := range extra {
+			s[k] = v
+		}
+		return s
+	}
+	t.Run("flattens a top-level anyOf into one object schema CC accepts", func(t *testing.T) {
+		description, listed := list(map[string]any{
+			"type": "object", "additionalProperties": false, "required": []any{"operation"},
+			"properties": map[string]any{"operation": str(map[string]any{"enum": []any{"start", "status"}}), "input": str(nil)},
 			"anyOf": []any{
-				map[string]any{"properties": map[string]any{"operation": map[string]any{}, "baseRef": map[string]any{}}},
-				map[string]any{"properties": map[string]any{"operation": map[string]any{}}, "required": []any{"input"}},
+				map[string]any{"type": "object", "properties": map[string]any{"operation": str(map[string]any{"enum": []any{"start"}}), "baseRef": str(nil)}},
+				map[string]any{"type": "object", "properties": map[string]any{"operation": str(map[string]any{"enum": []any{"status"}})}, "required": []any{"input"}},
 			},
 		})
+		for _, k := range []string{"anyOf", "oneOf", "allOf"} {
+			if _, ok := listed[k]; ok {
+				t.Fatalf("top-level %s must not reach CC", k)
+			}
+		}
+		props := listed["properties"].(map[string]any)
+		if listed["type"] != "object" || listed["additionalProperties"] != false || !reflect.DeepEqual(keys(props), []string{"baseRef", "input", "operation"}) {
+			t.Fatalf("got %v", listed)
+		}
+		if !reflect.DeepEqual(props["operation"].(map[string]any)["enum"], []any{"start", "status"}) {
+			t.Fatal("root declaration wins over a branch")
+		}
+		if !reflect.DeepEqual(listed["required"], []any{"operation"}) {
+			t.Fatal("a branch-only requirement is not universal")
+		}
 		// Go maps lose key order, so a branch named by its keys lists them sorted (the TypeScript lists insertion order).
-		want := "Input constraint: Provide parameters for at least one of: (baseRef, operation) or (input).\n\nd"
-		if tool["description"] != want {
-			t.Fatalf("got %q", tool["description"])
+		if want := "Input constraint: Provide parameters for at least one of: (baseRef, operation) or (input).\n\nd"; description != want {
+			t.Fatalf("got %q", description)
 		}
 	})
-	t.Run("allOf", func(t *testing.T) {
-		tool := list(map[string]any{"type": "object", "allOf": []any{map[string]any{"properties": map[string]any{"b": map[string]any{}}, "required": []any{"b"}}}})
-		if !strings.HasPrefix(tool["description"].(string), "Input constraint: all listed parameters apply together") {
-			t.Fatalf("got %q", tool["description"])
+	t.Run("keeps allOf requirements, which apply to every call", func(t *testing.T) {
+		description, listed := list(map[string]any{
+			"type": "object", "properties": map[string]any{"a": str(nil)}, "required": []any{"a"},
+			"allOf": []any{map[string]any{"type": "object", "properties": map[string]any{"b": map[string]any{"type": "number"}}, "required": []any{"b"}}},
+		})
+		if _, ok := listed["allOf"]; ok || !reflect.DeepEqual(keys(listed["properties"].(map[string]any)), []string{"a", "b"}) || !reflect.DeepEqual(listed["required"], []any{"a", "b"}) {
+			t.Fatalf("got %v", listed)
+		}
+		if !strings.HasPrefix(description, "Input constraint: all listed parameters apply together") {
+			t.Fatalf("got %q", description)
 		}
 	})
-	t.Run("oneOf of $defs refs", func(t *testing.T) {
-		tool := list(map[string]any{"type": "object",
+	t.Run("flattens a oneOf of $defs refs and names each group in the description", func(t *testing.T) {
+		description, listed := list(map[string]any{"type": "object",
 			"$defs": map[string]any{
-				"byId":   map[string]any{"properties": map[string]any{"id": map[string]any{}}, "required": []any{"id"}},
-				"byName": map[string]any{"properties": map[string]any{"name": map[string]any{}}, "required": []any{"name"}},
+				"byId":   map[string]any{"type": "object", "properties": map[string]any{"id": str(nil)}, "required": []any{"id"}},
+				"byName": map[string]any{"type": "object", "properties": map[string]any{"name": str(nil), "scope": str(nil)}, "required": []any{"name"}},
 			},
 			"oneOf": []any{map[string]any{"$ref": "#/$defs/byId"}, map[string]any{"$ref": "#/$defs/byName"}}})
-		if tool["description"] != "Input constraint: Provide parameters for exactly one of: (id) or (name).\n\nd" {
-			t.Fatalf("got %q", tool["description"])
+		if _, ok := listed["oneOf"]; ok || !reflect.DeepEqual(keys(listed["properties"].(map[string]any)), []string{"id", "name", "scope"}) {
+			t.Fatalf("got %v", listed)
+		}
+		if _, ok := listed["required"]; ok {
+			t.Fatal("each branch's requirement holds only for that branch")
+		}
+		if description != "Input constraint: Provide parameters for exactly one of: (id) or (name).\n\nd" {
+			t.Fatalf("got %q", description)
 		}
 	})
-	t.Run("no combinator leaves the description alone", func(t *testing.T) {
-		if list(map[string]any{"type": "object"})["description"] != "d" {
-			t.Fatal("description changed")
+	t.Run("leaves the description alone when there is no top-level combinator", func(t *testing.T) {
+		if description, _ := list(map[string]any{"type": "object", "properties": map[string]any{"a": str(nil)}}); description != "d" {
+			t.Fatalf("got %q", description)
 		}
 	})
 }
@@ -224,7 +264,7 @@ func TestToolInvocation(t *testing.T) {
 			t.Fatalf("result %v", r.Result)
 		}
 	})
-	t.Run("hands the handler the tool_use id, not one inferred from call order", func(t *testing.T) {
+	t.Run("hands the handler Claude's tool_use id, not one inferred from call order", func(t *testing.T) {
 		c := newClient(t, tools())
 		c.callTool("beta", "toolu_second", nil)
 		c.callTool("alpha", "toolu_first", nil)
@@ -261,11 +301,13 @@ func TestToolsCallMissingMetaErrors(t *testing.T) {
 		ran = true
 		return convert.McpResult{}, nil
 	}}})
-	r := c.callTool("alpha", "", nil)
-	want := `alpha: tools/call is missing _meta["claudecode/toolUseId"] — cannot pair the result with its tool call`
-	if r.Error == nil || r.Error.Code != -32603 || r.Error.Message != want || ran {
-		t.Fatalf("error %+v ran=%v", r.Error, ran)
-	}
+	t.Run("fails loudly when the tool_use id is absent rather than mispairing", func(t *testing.T) {
+		r := c.callTool("alpha", "", nil)
+		want := `alpha: tools/call is missing _meta["claudecode/toolUseId"] — cannot pair the result with its tool call`
+		if r.Error == nil || r.Error.Code != -32603 || r.Error.Message != want || ran {
+			t.Fatalf("error %+v ran=%v", r.Error, ran)
+		}
+	})
 	if r := c.callTool("nope", "toolu_1", nil); r.Error == nil || r.Error.Message != "Unknown tool: nope" {
 		t.Fatalf("error %+v", r.Error)
 	}
@@ -278,8 +320,11 @@ func TestInitializeResultShape(t *testing.T) {
 	s, _ := NewServer("custom-tools", nil)
 	req := `{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"claude-code","version":"2.1.310"}},"jsonrpc":"2.0","id":0}`
 	out, has, err := s.Handle(context.Background(), json.RawMessage(req))
+	// The exact bytes. Go writes map keys sorted where the SDK writes result, jsonrpc, id and
+	// protocolVersion, capabilities, serverInfo; Claude Code parses the JSON
+	// (TestInitializeResultAcceptedByCLI, live).
 	want := `{"id":0,"jsonrpc":"2.0","result":{"capabilities":{"tools":{}},"protocolVersion":"2025-11-25","serverInfo":{"name":"custom-tools","version":"1.0.0"}}}`
-	if err != nil || !has || !jsonEqual(t, string(out), want) {
+	if err != nil || !has || string(out) != want {
 		t.Fatalf("has=%v err=%v out=%s", has, err, out)
 	}
 	for _, c := range []struct{ asked, want string }{{"2024-11-05", "2024-11-05"}, {"1999-01-01", "2025-11-25"}} {
@@ -319,6 +364,25 @@ func TestOtherMessages(t *testing.T) {
 	}
 	if _, _, err := s.Handle(ctx, json.RawMessage(`{`)); err == nil {
 		t.Fatal("malformed JSON must error")
+	}
+}
+
+func TestToolsCallWithoutHandlerErrorsInsteadOfPanicking(t *testing.T) {
+	c := newClient(t, []ToolDef{{Name: "bare", InputSchema: map[string]any{"type": "object"}}})
+	if r := c.callTool("bare", "t", nil); r.Error == nil || r.Error.Code != -32603 || r.Error.Message != "bare: tool has no handler" {
+		t.Fatalf("%+v", r.Error)
+	}
+}
+
+func TestNewServerCopiesTheToolSlice(t *testing.T) {
+	tools := []ToolDef{{Name: "a", InputSchema: map[string]any{"type": "object"}}}
+	s, err := NewServer("custom-tools", tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools[0].Name = "renamed"
+	if s.tools[0].Name != "a" {
+		t.Fatal("the server aliases the caller's slice")
 	}
 }
 
