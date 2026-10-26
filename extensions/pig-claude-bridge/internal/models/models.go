@@ -39,11 +39,11 @@ var datedAlias = regexp.MustCompile(`-20\d{6}$`)
 // familyOrder is the display tier: flagship families first, unknown families last.
 var familyOrder = []string{"fable", "opus", "sonnet", "haiku"}
 
-// MeasuredOneM holds the [1m] ids verified to serve 1M on every plan. A new
+// measuredOneM holds the [1m] ids verified to serve 1M on every plan. A new
 // model serves 200K until someone measures it and adds it here. Known
 // exception unrelated to long context: fable-5 is not included with a Pro
 // account without Extra Usage.
-var MeasuredOneM = map[string]bool{
+var measuredOneM = map[string]bool{
 	"claude-fable-5":    true,
 	"claude-fable-5-1":  true,
 	"claude-opus-5-5":   true,
@@ -55,9 +55,9 @@ var MeasuredOneM = map[string]bool{
 	"claude-haiku-5-5":  true,
 }
 
-// PlanGatedOneM holds the measured exceptions: pi-ai declares 1M and the [1m]
+// planGatedOneM holds the measured exceptions: pi-ai declares 1M and the [1m]
 // id works, but only when the plan allows it.
-var PlanGatedOneM = map[string]func(LongContextSettings) bool{
+var planGatedOneM = map[string]func(LongContextSettings) bool{
 	// [1m] measured 1M on Max plan / extra usage; 429 on Pro without it.
 	"claude-opus-4-6": func(s LongContextSettings) bool { return s.Plan == "max" || s.LongContextExtraUsage },
 	// [1m] measured 1M with extra usage only.
@@ -87,7 +87,8 @@ func familyTier(family string) int {
 }
 
 // BuildModels projects pi-ai's model entries down to the fields the provider
-// registration expects, newest generation first. Dated aliases are dropped.
+// registration expects, newest generation first. Dated aliases are dropped. The
+// result shares nothing with the input, which is usually the shared Catalog().
 func BuildModels(anthropic []map[string]any) []map[string]any {
 	kept := make([]map[string]any, 0, len(anthropic))
 	for _, m := range anthropic {
@@ -116,12 +117,34 @@ func BuildModels(anthropic []map[string]any) []map[string]any {
 		// to the effort lookup; a field absent upstream stays absent.
 		for _, k := range []string{"id", "name", "reasoning", "input", "contextWindow", "maxTokens", "thinkingLevelMap"} {
 			if v, ok := m[k]; ok {
-				p[k] = v
+				if f, isNumber := v.(float64); isNumber {
+					v = int(f) // token counts; ApplyLongContext writes int too
+				}
+				p[k] = cloneJSON(v)
 			}
 		}
 		out[i] = p
 	}
 	return out
+}
+
+// cloneJSON deep-copies a JSON-decoded value's maps and slices.
+func cloneJSON(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(v))
+		for k, x := range v {
+			m[k] = cloneJSON(x)
+		}
+		return m
+	case []any:
+		s := make([]any, len(v))
+		for i, x := range v {
+			s[i] = cloneJSON(x)
+		}
+		return s
+	}
+	return v
 }
 
 // ResolveClaudeCodeRuntimeModel applies the measured Claude Agent SDK policy:
@@ -133,10 +156,10 @@ func ResolveClaudeCodeRuntimeModel(modelID string, s LongContextSettings) Runtim
 	if slices.Contains(s.ForceTwoHundredK, modelID) {
 		return RuntimeModel{modelID, twoHundredKContext}
 	}
-	if MeasuredOneM[modelID] {
+	if measuredOneM[modelID] {
 		return RuntimeModel{modelID + "[1m]", oneMContext}
 	}
-	if gate, ok := PlanGatedOneM[modelID]; ok && gate(s) {
+	if gate, ok := planGatedOneM[modelID]; ok && gate(s) {
 		return RuntimeModel{modelID + "[1m]", oneMContext}
 	}
 	return RuntimeModel{modelID, twoHundredKContext}
@@ -171,6 +194,9 @@ func ResolveModel(models []map[string]any, input string) (map[string]any, bool) 
 	return best, best != nil
 }
 
+// oneMLabel matches a name that already says 1M, so the suffix is not doubled.
+var oneMLabel = regexp.MustCompile(`(?i)\b1M\b`)
+
 // ApplyLongContext sets each model's contextWindow to the window the bridge
 // requests and labels 1M models with a " 1M" name suffix. Input maps are not mutated.
 func ApplyLongContext(models []map[string]any, s LongContextSettings) []map[string]any {
@@ -192,5 +218,3 @@ func ApplyLongContext(models []map[string]any, s LongContextSettings) []map[stri
 	}
 	return out
 }
-
-var oneMLabel = regexp.MustCompile(`(?i)\b1M\b`)

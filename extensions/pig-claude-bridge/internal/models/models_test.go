@@ -105,6 +105,38 @@ func TestModelsProjection(t *testing.T) {
 		}
 	})
 
+	t.Run("pins the order of the generated catalog", func(t *testing.T) {
+		want := []string{
+			"claude-fable-5-1", "claude-fable-5",
+			"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
+			"claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5",
+			"claude-haiku-5-5", "claude-haiku-4-5",
+		}
+		if got := ids(BuildModels(Catalog())); !slices.Equal(got, want) {
+			t.Errorf("order = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("shares no maps or slices with the catalog", func(t *testing.T) {
+		m := find(BuildModels(Catalog()), "claude-opus-4-6")
+		m["input"].([]any)[0] = "mutated"
+		m["thinkingLevelMap"].(map[string]any)["max"] = "mutated"
+		fresh := find(BuildModels(Catalog()), "claude-opus-4-6")
+		if fresh["input"].([]any)[0] == "mutated" || fresh["thinkingLevelMap"].(map[string]any)["max"] == "mutated" {
+			t.Fatal("a returned model aliases the shared catalog")
+		}
+	})
+
+	t.Run("token counts are ints, as ApplyLongContext writes them", func(t *testing.T) {
+		m := find(BuildModels(Catalog()), "claude-haiku-4-5")
+		if _, ok := m["contextWindow"].(int); !ok {
+			t.Errorf("contextWindow is %T", m["contextWindow"])
+		}
+		if _, ok := m["maxTokens"].(int); !ok {
+			t.Errorf("maxTokens is %T", m["maxTokens"])
+		}
+	})
+
 	t.Run("sorts newest generation first within each family", func(t *testing.T) {
 		models := BuildModels([]map[string]any{
 			oneM("claude-opus-4-7"), oneM("claude-opus-5"), oneM("claude-sonnet-5"), oneM("claude-opus-4-6"),

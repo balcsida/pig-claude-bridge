@@ -26,7 +26,8 @@ const sortKeys = (v) =>
 	: v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(v[k])]))
 	: v;
 
-const models = getModels("anthropic").map(sortKeys).sort((a, b) => a.id.localeCompare(b.id));
+// Code-point order: localeCompare would depend on the generating machine's locale.
+const models = getModels("anthropic").map(sortKeys).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 const lines = models.map((m) => JSON.stringify(m)).join(",\n");
 if (lines.includes("`")) throw new Error("catalog contains a backtick; cannot embed as a raw string");
 
