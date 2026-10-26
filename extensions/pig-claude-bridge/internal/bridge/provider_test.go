@@ -1124,3 +1124,19 @@ func TestStreamSimpleHonoursAnAbortWhileClaudeCodeStarts(t *testing.T) {
 		t.Fatal("an aborted start-up left a live query behind")
 	}
 }
+
+// The empty-prompt diagnostic carries the TypeScript's fields, so its diag parsers read it.
+func TestEmptyPromptDiagnosticCarriesTheTypeScriptFields(t *testing.T) {
+	h := newProviderHarness(t, nil)
+	h.script(answers("cc-empty", "ok"))
+	finalOf(t, h.call(context.Background(), "pi-empty", msgs(userMsg("hi"), sayMsg("hello"))))
+	diag, err := os.ReadFile(config.DiagLogPath(h.agentDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"label":"empty_prompt"`, `"lastMsgRole":"assistant"`, `"isReentrant":false`, `"activeQueryExists":false`, `"sharedSession":`, `"messageRoles":"[0]user [1]assistant"`} {
+		if !strings.Contains(string(diag), field) {
+			t.Errorf("diag lacks %s:\n%s", field, diag)
+		}
+	}
+}

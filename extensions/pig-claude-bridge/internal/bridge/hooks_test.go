@@ -137,8 +137,9 @@ func TestAPromptTheBridgeRefuses(t *testing.T) {
 		if len(h.spawns()) != 0 || len(h.b.liveContexts()) != 0 {
 			t.Fatal("no query may start and no context may stay claimed")
 		}
-		if _, err := os.Stat(config.DiagLogPath(agentDir)); err != nil {
-			t.Fatalf("the diag log: %v", err)
+		diag, err := os.ReadFile(config.DiagLogPath(agentDir))
+		if err != nil || !strings.Contains(string(diag), `"label":"prompt_capture_unresolved"`) || !strings.Contains(string(diag), `"reentrantUserQuery":false`) {
+			t.Fatalf("the diag log: %s, %v", diag, err)
 		}
 	})
 

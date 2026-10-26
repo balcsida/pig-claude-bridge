@@ -948,7 +948,7 @@ func TestAbortOnARunThatContinuesAParkedQuery(t *testing.T) {
 		})
 		// The second run takes over the parked query.
 		c.second = sdk.CreateAssistantMessageEventStream()
-		h.b.claimCurrentPiStream(c.second, "tool-result", h.q, nil)
+		h.b.claimCurrentPiStream(c.second, "tool-result", h.q)
 		h.q.resetTurnState(testModel)
 		return c
 	}
@@ -1484,7 +1484,7 @@ func TestAbortedQueryDropsItsHeldRateLimitEvent(t *testing.T) {
 	receive(t, done, "teardown")
 
 	next := sdk.CreateAssistantMessageEventStream()
-	h.b.claimCurrentPiStream(next, "next query", h.q, nil)
+	h.b.claimCurrentPiStream(next, "next query", h.q)
 	h.b.reportHeldRateLimit(h.q)
 	if log := readDebugLog(t, h.agent); strings.Contains(log, "rate limit: headers") {
 		t.Fatalf("the next query heard from the aborted one:\n%s", log)

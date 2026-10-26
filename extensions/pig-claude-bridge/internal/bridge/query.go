@@ -49,8 +49,6 @@ type QueryContext struct {
 	customToolNameToPi map[string]string
 	// completedStreams are the streams that got their terminal event (markStreamComplete).
 	completedStreams map[*sdk.ModelEventStream]struct{}
-	// currentOnResponse is the onResponse of the provider call that owns currentPiStream.
-	currentOnResponse func(map[string]any, map[string]any) error
 	// heldRateLimit is the latest rate_limit_event not yet reported; CC sends it
 	// after message_stop, so it waits for the next call's stream.
 	heldRateLimit    *RateLimitInfo

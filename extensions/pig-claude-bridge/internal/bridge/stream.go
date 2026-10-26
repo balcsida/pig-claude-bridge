@@ -117,7 +117,7 @@ func (b *Bridge) logServedContextWindow(label string, frame, model map[string]an
 
 // claimCurrentPiStream makes stream the one events go to, warning when it replaces
 // a stream that never got its terminal event.
-func (b *Bridge) claimCurrentPiStream(stream *sdk.ModelEventStream, label string, q *QueryContext, onResponse func(map[string]any, map[string]any) error) {
+func (b *Bridge) claimCurrentPiStream(stream *sdk.ModelEventStream, label string, q *QueryContext) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.currentPiStream != nil {
@@ -126,7 +126,6 @@ func (b *Bridge) claimCurrentPiStream(stream *sdk.ModelEventStream, label string
 		}
 	}
 	q.currentPiStream = stream
-	q.currentOnResponse = onResponse
 }
 
 // pushLocked pushes an event carrying a deep copy of the turn so far.
