@@ -134,6 +134,14 @@ func (b *Bridge) OnSessionBeforeCompact(host Host) {
 	b.rememberSummarySession(b.hostSessionID(host, "session_before_compact"))
 }
 
+// OnSessionCompactFailed ends the summary operation of a compaction that failed or
+// was aborted: session_compact never follows, and the pending summary would hand
+// this session's cwd to a later summary from another session (D7).
+func (b *Bridge) OnSessionCompactFailed(host Host) {
+	defer b.recoverHandler("session_compact_failed")
+	b.forgetSummarySession(b.hostSessionID(host, "session_compact_failed"))
+}
+
 // OnSessionBeforeTree marks the session whose branch summary runs next.
 func (b *Bridge) OnSessionBeforeTree(host Host) {
 	defer b.recoverHandler("session_before_tree")

@@ -22,10 +22,13 @@ func (b *Bridge) queueStartupNotices() {
 }
 
 // showStartupNoticeOnce shows the pending notices as one message, because
-// consecutive info notifies overwrite each other in the TUI. The TypeScript shows
-// them only in the TUI mode; PiG's Host exposes no mode, so every host gets them
-// (adaptation).
+// consecutive info notifies overwrite each other in the TUI. Outside the TUI they
+// stay pending: hasUI is true in RPC mode too, but only a terminal user can act on
+// them.
 func (b *Bridge) showStartupNoticeOnce(host Host) {
+	if host.Mode() != "tui" {
+		return
+	}
 	b.mu.Lock()
 	notices := b.pendingNotices
 	b.pendingNotices = nil

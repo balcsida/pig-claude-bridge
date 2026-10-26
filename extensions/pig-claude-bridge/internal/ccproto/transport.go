@@ -103,7 +103,11 @@ type Process struct {
 
 // Start spawns the child, writes initialize first and returns once its response arrives.
 func Start(ctx context.Context, o Options, h Handlers) (*Process, error) {
-	cmd := exec.Command(o.Executable, BuildArgs(o)...)
+	name, args, err := commandLine(o.Executable, BuildArgs(o)...)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(name, args...)
 	cmd.Dir = o.Cwd
 	cmd.Env = BuildEnv(os.Environ(), o)
 	stdin, err := cmd.StdinPipe()

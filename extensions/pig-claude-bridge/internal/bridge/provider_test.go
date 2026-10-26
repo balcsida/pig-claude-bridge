@@ -27,6 +27,7 @@ type fakeHost struct {
 	sessionID string
 	cwd       string
 	prompt    string
+	mode      string
 }
 
 func (h *fakeHost) Notify(message, level string) {
@@ -38,6 +39,7 @@ func (h *fakeHost) SessionID() (string, error) { return h.sessionID, nil }
 func (h *fakeHost) Cwd() string                { return h.cwd }
 func (h *fakeHost) AgentDir() string           { return "" }
 func (h *fakeHost) ConfigDirName() string      { return ".pig" }
+func (h *fakeHost) Mode() string               { return h.mode }
 func (h *fakeHost) SystemPrompt() (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1012,6 +1014,7 @@ func TestStreamSimpleFailuresEndTheTurnOnTheStream(t *testing.T) {
 
 	t.Run("a panic in bridge code becomes one error event", func(t *testing.T) {
 		h := newProviderHarness(t, func(d *Deps) { d.Config.StartupNoticeShown = ""; d.Config.Provider.Plan = nil })
+		h.host.mode = "tui"
 		stream, err := h.b.StreamSimple(context.Background(), panickingHost{h.host}, testModel, map[string]any{"messages": msgs(userMsg("hi"))}, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -1023,7 +1026,7 @@ func TestStreamSimpleFailuresEndTheTurnOnTheStream(t *testing.T) {
 	})
 
 	t.Run("a cacheRetention none call is routed to the isolated query", func(t *testing.T) {
-		h := newProviderHarness(t, nil)
+		h := newProviderHarness(t, func(d *Deps) { d.Debug = true })
 		h.script(replies("the summary"))
 		stream, _ := h.b.StreamSimple(context.Background(), h.host, testModel, map[string]any{"messages": msgs(userMsg("summarize"))}, map[string]any{"cacheRetention": "none"})
 		reply := finalOf(t, stream)
@@ -1032,6 +1035,10 @@ func TestStreamSimpleFailuresEndTheTurnOnTheStream(t *testing.T) {
 		}
 		if spawns := h.spawns(); len(spawns) != 1 || !spawns[0].opts.NoSessionPersistence {
 			t.Fatalf("spawns = %v", spawns)
+		}
+		// The TypeScript tags this process compact-summary (index.ts:611): CLI log names and [cli-stderr] lines carry it.
+		if f := h.lastSpawn().opts.DebugFile; !strings.Contains(filepath.Base(f), "-compact-summary-1.log") {
+			t.Fatalf("debug file = %q", f)
 		}
 	})
 }

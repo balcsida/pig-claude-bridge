@@ -607,6 +607,7 @@ func (explodingHost) Cwd() string                   { panic("boom") }
 func (explodingHost) AgentDir() string              { panic("boom") }
 func (explodingHost) ConfigDirName() string         { panic("boom") }
 func (explodingHost) SystemPrompt() (string, error) { panic("boom") }
+func (explodingHost) Mode() string                  { panic("boom") }
 
 // Claude Code parked at a tool call does not exit when its stdin ends (it keeps
 // calling the API), so session_shutdown must kill it. The fake ignores SIGTERM too:

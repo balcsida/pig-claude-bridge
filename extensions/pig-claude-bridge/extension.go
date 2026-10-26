@@ -32,6 +32,12 @@ func (h sdkHost) AgentDir() string              { d, _ := sdk.AgentDir(); return
 func (h sdkHost) ConfigDirName() string         { d, _ := sdk.ConfigDirName(); return d }
 func (h sdkHost) SystemPrompt() (string, error) { return h.ctx.GetSystemPrompt() }
 
+// Mode is "" when the context is stale (the SDK panics), which no caller treats as the TUI.
+func (h sdkHost) Mode() (mode string) {
+	defer func() { _ = recover() }()
+	return h.ctx.Mode()
+}
+
 // providerModels is the model list registered with PiG.
 func providerModels(p *config.ProviderConfig) []map[string]any {
 	s := models.LongContextSettings{Plan: "pro"}
@@ -173,6 +179,7 @@ func Extension() *sdk.Extension {
 	forward("session_compact", func(h bridge.Host, data map[string]any) {
 		b.OnSessionCompact(h, fmt.Sprintf("session_compact:%v:willRetry=%v", data["reason"], data["willRetry"]))
 	})
+	forward("session_compact_failed", func(h bridge.Host, _ map[string]any) { b.OnSessionCompactFailed(h) })
 	forward("session_tree", func(h bridge.Host, _ map[string]any) { b.OnSessionTree(h) })
 	forward("session_shutdown", func(h bridge.Host, _ map[string]any) { b.OnSessionShutdown(h) })
 	return ext

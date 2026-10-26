@@ -23,6 +23,7 @@ func (h *recordingHost) Cwd() string                   { return h.cwd }
 func (h *recordingHost) AgentDir() string              { return "" }
 func (h *recordingHost) ConfigDirName() string         { return ".pig" }
 func (h *recordingHost) SystemPrompt() (string, error) { return "", nil }
+func (h *recordingHost) Mode() string                  { return "print" }
 
 // newTestBridge returns a Bridge whose Claude dir and agent dir are throwaway.
 func newTestBridge(t *testing.T, debug bool) (b *Bridge, claudeDir, agentDir string) {

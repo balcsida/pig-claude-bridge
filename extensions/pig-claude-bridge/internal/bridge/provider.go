@@ -106,7 +106,7 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 	// session sync.
 	if str(options["cacheRetention"]) == "none" {
 		b.debugf("provider: one-off summarizer call (cacheRetention none) routed to isolated summary, msgs=%d", len(messages))
-		isolated, _ := b.IsolatedStream(ctx, host, model, piContext, options, "summary", nil, nil)
+		isolated, _ := b.IsolatedStream(ctx, host, model, piContext, options, "compact-summary", nil, nil)
 		return isolated
 	}
 

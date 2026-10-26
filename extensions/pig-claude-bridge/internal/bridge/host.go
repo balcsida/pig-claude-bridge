@@ -25,6 +25,8 @@ type Host interface {
 	AgentDir() string
 	ConfigDirName() string
 	SystemPrompt() (string, error)
+	// Mode is PiG's run mode: "tui", "rpc", "json" or "print".
+	Mode() string
 }
 
 // Deps is everything a Bridge needs that is not per request.

@@ -75,3 +75,20 @@ func TestSummaryCwd(t *testing.T) {
 		}
 	})
 }
+
+// A compaction that fails or is aborted fires session_compact_failed instead of
+// session_compact; its pending summary must not hand its cwd to a later summary.
+func TestFailedCompactionForgetsItsSummarySession(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	host := &fakeHost{sessionID: "cancelled"}
+	b.OnSessionBeforeCompact(host)
+	b.OnSessionCompactFailed(host)
+	if id, ok := b.summarySessionFor(); ok {
+		t.Fatalf("still pending: %q", id)
+	}
+	b.OnSessionBeforeCompact(&fakeHost{sessionID: "other"})
+	b.OnSessionCompactFailed(host)
+	if id, _ := b.summarySessionFor(); id != "other" {
+		t.Fatalf("a stale failure cleared another session's summary: %q", id)
+	}
+}

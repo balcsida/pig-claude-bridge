@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,6 +28,19 @@ func ResolveExecutable(configured string) (string, error) {
 	return path, nil
 }
 
+// commandLine is how exe runs with args: a .js, .mjs or .ts entry point through node, as the SDK does.
+func commandLine(exe string, args ...string) (string, []string, error) {
+	switch filepath.Ext(exe) {
+	case ".js", ".mjs", ".ts":
+		node, err := exec.LookPath("node")
+		if err != nil {
+			return "", nil, fmt.Errorf("%s is a script and needs node, which is not on PATH: %w", exe, err)
+		}
+		return node, append([]string{exe}, args...), nil
+	}
+	return exe, args, nil
+}
+
 var semverRE = regexp.MustCompile(`^\s*(\d+\.\d+\.\d+)`)
 
 // VersionTimeout bounds `claude --version`: a binary that never answers must not hang the turn.
@@ -36,7 +50,11 @@ var VersionTimeout = 10 * time.Second
 func Version(exe string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), VersionTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "--version")
+	name, args, err := commandLine(exe, "--version")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
 	// A grandchild can keep stdout open after the kill; stop waiting for it.
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()

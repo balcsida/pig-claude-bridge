@@ -3,6 +3,7 @@ package ccproto
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -83,5 +84,28 @@ func TestOlderThan(t *testing.T) {
 		if got := OlderThan(c.v, c.min); got != c.want {
 			t.Errorf("OlderThan(%q,%q)=%v want %v", c.v, c.min, got, c.want)
 		}
+	}
+}
+
+// The SDK runs a JavaScript or TypeScript pathToClaudeCodeExecutable through node.
+func TestCommandLineRunsScriptsThroughNode(t *testing.T) {
+	dir := t.TempDir()
+	node := filepath.Join(dir, "node")
+	if err := os.WriteFile(node, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	for _, exe := range []string{"/opt/cc/cli.js", "/opt/cc/cli.mjs", "/opt/cc/cli.ts"} {
+		name, args, err := commandLine(exe, "--version")
+		if err != nil || name != node || !slices.Equal(args, []string{exe, "--version"}) {
+			t.Errorf("%s: got %q %q, %v", exe, name, args, err)
+		}
+	}
+	if name, args, err := commandLine("/opt/cc/claude", "--version"); err != nil || name != "/opt/cc/claude" || !slices.Equal(args, []string{"--version"}) {
+		t.Errorf("native binary: got %q %q, %v", name, args, err)
+	}
+	t.Setenv("PATH", "")
+	if _, _, err := commandLine("/opt/cc/cli.js"); err == nil || !strings.Contains(err.Error(), "node") {
+		t.Errorf("missing node: err = %v", err)
 	}
 }

@@ -52,7 +52,7 @@ func TestStartupNoticeShownOnce(t *testing.T) {
 
 	t.Run("an unset plan queues the Max-plan notice, shown once and recorded in the global config", func(t *testing.T) {
 		b, agentDir := newBridge(t, config.Config{})
-		host := &fakeHost{}
+		host := &fakeHost{mode: "tui"}
 		b.showStartupNoticeOnce(host)
 		b.showStartupNoticeOnce(host)
 		n := host.noticeList()
@@ -65,13 +65,31 @@ func TestStartupNoticeShownOnce(t *testing.T) {
 			t.Fatalf("global config = %q, %v", data, err)
 		}
 	})
+	t.Run("outside the TUI the notice stays pending and nothing is recorded", func(t *testing.T) {
+		b, agentDir := newBridge(t, config.Config{})
+		for _, mode := range []string{"rpc", "json", "print", ""} {
+			host := &fakeHost{mode: mode}
+			b.showStartupNoticeOnce(host)
+			if len(host.noticeList()) != 0 {
+				t.Fatalf("%q: notices = %v", mode, host.noticeList())
+			}
+		}
+		if _, err := os.Stat(config.GlobalConfigPath(agentDir)); err == nil {
+			t.Fatal("the global config was written for a notice nobody saw")
+		}
+		tui := &fakeHost{mode: "tui"}
+		b.showStartupNoticeOnce(tui)
+		if n := tui.noticeList(); len(n) != 1 || !strings.Contains(n[0], "Welcome to pi-claude-bridge") {
+			t.Fatalf("the pending notice was not shown in the TUI: %q", n)
+		}
+	})
 	t.Run("a configured plan or an earlier notice queues nothing and writes nothing", func(t *testing.T) {
 		for name, cfg := range map[string]config.Config{
 			"plan set":      {Provider: &config.ProviderConfig{Plan: &max}},
 			"already shown": {StartupNoticeShown: "2026-01-01"},
 		} {
 			b, agentDir := newBridge(t, cfg)
-			host := &fakeHost{}
+			host := &fakeHost{mode: "tui"}
 			b.showStartupNoticeOnce(host)
 			if len(host.noticeList()) != 0 {
 				t.Fatalf("%s: notices = %v", name, host.noticeList())
@@ -83,6 +101,7 @@ func TestStartupNoticeShownOnce(t *testing.T) {
 	})
 	t.Run("the first provider call shows it", func(t *testing.T) {
 		h := newProviderHarness(t, func(d *Deps) { d.Config.Provider.Plan = nil })
+		h.host.mode = "tui"
 		h.script(answers("cc-notice", "ok"))
 		finalOf(t, h.call(t.Context(), "pi-notice", msgs(userMsg("hi"))))
 		if n := h.host.noticeList(); len(n) != 1 || !strings.Contains(n[0], "Welcome to pi-claude-bridge") {
