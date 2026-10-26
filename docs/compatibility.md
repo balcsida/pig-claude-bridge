@@ -30,7 +30,7 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 
 **D6. AskClaude renders as lines.** TypeScript: `askclaude-ui.ts` builds pi-tui components (colour, "(to expand)" affordance). Port: PiG's `ToolDefinition.RenderCall`/`RenderResult` return lines, so the action summary is plain lines without colour, with "… (to expand)" as text, and truncation counts runes.
 
-**D7. Summary attribution by the most recent pending compaction.** TypeScript: `session-cwd.ts` keys the pending summary session by the identity of the request's `AbortSignal`. Port: Go has no such identity, so a single most-recent-pending slot is set at `session_before_compact` / `session_before_tree` and the isolated summary query reads it; it is not cleared by the read (Pi makes several summary calls per operation, compaction makes two) and `forgetSummarySession` clears it only if no other session has been remembered since. With two sessions summarising at once in one process, the later one wins.
+**D7. Summary attribution by the most recent pending compaction.** TypeScript: `session-cwd.ts` keys the pending summary session by the identity of the request's `AbortSignal`. Port: Go has no such identity, so a single most-recent-pending slot is set at `session_before_compact` / `session_before_tree` and the isolated summary query reads it; it is not cleared by the read (Pi makes several summary calls per operation, compaction makes two) and `forgetSummarySession` clears it only if no other session has been remembered since. With two sessions summarising at once in one process, the later one wins. A compaction that fails or is aborted never reaches `session_compact`, so the port also forgets the pending session at PiG's `session_compact_failed` (fired after a failed or aborted compaction, PiG `compaction.md`); without it the stale slot would hand that session's cwd to a later summary from another session. The TypeScript needs no such hook because a cancelled compaction's signal is never looked up again. A cancelled tree navigation has no failure event, so its slot stays until the next `session_before_compact` or `session_before_tree` replaces it.
 
 ## Rulings that changed the plan
 
@@ -61,7 +61,6 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 - Custom prompt sections arriving in one system message are rendered in name order. PiG delivers decoded maps without key order; the TypeScript keeps insertion order. No test pins the two-section case.
 - `PlaceCarriedAttachments` returns `(attachments, skipped)`, as the TypeScript object does. The audit-record test appends uuid-less lines directly and the test helper uses a fixed `/work` project path.
 - Two Pi-builder-dependent prompt-capture tests became literal-string assertions (the TypeScript tests depended on Pi's prompt builder). `CollectPromptSkills` guards against inheritance cycles by visiting each capture once (`visited` set), listing ancestors first and each skill file once.
-- Startup notice is not gated on TUI mode.
 
 ### Tool schemas and the MCP server
 
@@ -81,7 +80,9 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 
 - `Details.executionTime` is an `int64`.
 - The "Claude Code returned an error result" replacement is unreachable, as in the TypeScript (the loop stops at the error result). An error result drops the mirror, while a process exit or panic marks rebuild (the TypeScript drops the mirror on exit too).
-- Abort lifetime is proven by the live smoke's tool round trip. `reportHeldRateLimit` runs at the start of each call rather than inside the consume loop.
+- Abort lifetime is proven by the live smoke's tool round trip. Abort follows `ctx.Signal()`, PiG's run-scoped signal, where the plan said `ctx.Done()`: the per-request `Done()` is cancelled when each provider call ends, which would kill a query parked at a tool call between calls; `Done()` is used only when a context carries no signal.
+- Abort is honoured while Claude Code starts: the call's cancellation reaches the spawn until the `initialize` answer arrives (spike S2 saw about 4 s with user `SessionStart` hooks), so an abort then ends the turn as aborted instead of waiting; after that, the stream's own abort wiring takes over, so a parked query still survives between calls. The isolated and AskClaude paths spawn under the call's context. `claude --version` is bounded by 10 s and runs once at a time; a probe that times out is logged and does not fail the query.
+- The startup notice is shown only when PiG's mode is `tui`, as in the TypeScript, and stays pending otherwise. The mode is read from each call's context (`Host.Mode()`); the TypeScript remembers it from `session_start`. `reportHeldRateLimit` runs at the start of each call rather than inside the consume loop.
 - Prompt-too-long: the CLI exits 1 with empty stderr after the input ends; the bridge surfaces the `is_error` text (`resultErrorText`), not the bare exit.
 
 ### Rate limits
@@ -99,12 +100,15 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 ### AskClaude
 
 - `enabled: "false"` as above; rendering as lines (D6); rune-based truncation; `Definition(b, cfg, agentDir, host, requestContext)` has the signature the import cycle forces; the deprecation notice date comes from `time.Now()`.
-- An aborted call differs as described under the provider stream.
+- An aborted call differs as described under the provider stream. A mid-run abort returns `Error: Aborted` (the tool fails), where the TypeScript returns the partial text gathered so far with `stopReason: "cancelled"`.
 
 ### Protocol client
 
 - There is no Node Agent SDK: the client spawns `claude` with `--permission-mode bypassPermissions` and the SDK's argv, and speaks the newline-delimited JSON control protocol. Argv and the `initialize` request are pinned by a snapshot recorded from the Node SDK 0.3.310 (`scripts/dev/record-sdk-argv.mjs`).
+- Every Claude Code child gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, overwriting an inherited value, as the TypeScript sets it on its own `process.env` at load (`index.ts:2465`) for every child to inherit. The argv snapshot's recorder builds the environment without `process.env`, so the snapshot comparisons leave this variable out and `TestBuildEnv` pins it.
+- A `pathToClaudeCodeExecutable` ending in `.js`, `.mjs` or `.ts` runs as `node <path> …`, for `--version` and the query, as the SDK does; without `node` on `PATH` the call fails with a notice.
 - Between turns no Claude Code process is alive in either bridge: the query ends at the end of a turn and the next turn resumes the session. PiG's `new_session` replaces the extension runner (D70) and the pre-`/new` runner was observed gone after the next prompt.
+- Claude Code children are killed at `session_shutdown`, the counterpart of the SDK's `killAll` at process exit: every live query is aborted, then every child still running gets SIGKILL (`ccproto.Shutdown`). This matters because Claude Code parked at a tool call does not exit when its stdin ends and keeps calling the API. Per PiG's docs (`extensions.md`, `rpc.md`, `cli-integration.md`) `session_shutdown` is sent on exit (end of input, SIGTERM and SIGHUP), on `/new`, `/resume`, `/fork` and `/clone`, on the RPC `new_session`, `switch_session`, `fork` and `clone`, and on reload. Not covered: a PiG killed with SIGKILL or crashing sends no `session_shutdown`, and its Claude Code children outlive it. `TestIntSessionNewMidTurn` (live) checks the mid-turn `new_session` case; see [verification.md](verification.md).
 
 ### Live-test findings
 

@@ -78,9 +78,9 @@ The extension asks PiG for both directories; nothing is hard-coded. A missing or
 - `forceTwoHundredK`: array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if the catalog declares a model at 1M but Claude Code won't serve it on your plan.
 - `strictMcpConfig`: block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled`: enable Claude Code's auto-memory system (default `false`)
-- `pathToClaudeCodeExecutable`: path to the `claude` binary, used instead of the one on `PATH`.
+- `pathToClaudeCodeExecutable`: path to the `claude` binary, used instead of the one on `PATH`. A path ending in `.js`, `.mjs` or `.ts` is run through `node`, as the Agent SDK does.
 
-**Notices:** the startup notice points out when `provider.plan` is unset and records `startupNoticeShown` (a date) in the global config. A deprecation notice on first use of AskClaude records its display date as `askClaudeDeprecationShown`. The extension rewrites the global file only to add these keys and leaves every other key as it was; an unparseable global file is left alone.
+**Notices:** the startup notice, shown at the first bridge turn in the TUI only (it stays pending in RPC, JSON and print mode), points out when `provider.plan` is unset and records `startupNoticeShown` (a date) in the global config. A deprecation notice on first use of AskClaude records its display date as `askClaudeDeprecationShown`. The extension rewrites the global file only to add these keys and leaves every other key as it was; an unparseable global file is left alone.
 
 ## Why Go
 
@@ -150,7 +150,13 @@ System-prompt edits work by *wrapping*: replacing PiG's prompt leaves the bridge
 
 ### Hooks written for Claude Code
 
-`~/.claude/settings.json` hooks fire inside bridge turns, so a hook injecting Claude-specific guidance duplicates what PiG's extensions already provide. Hooks do not fire on isolated summary queries.
+`~/.claude/settings.json` hooks fire inside bridge turns, so a hook injecting Claude-specific guidance duplicates what PiG's extensions already provide. The bridge sets `PI_CODING_AGENT=true` for the Claude Code child; a hook can skip itself on that:
+
+```sh
+[ -n "$PI_CODING_AGENT" ] && exit 0
+```
+
+Hooks do not fire on isolated summary queries.
 
 ### Compaction and branch summaries
 

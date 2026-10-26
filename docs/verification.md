@@ -251,6 +251,22 @@ Adaptations from the TypeScript tests:
   pig. `PI_CODING_AGENT_DIR` becomes `PIG_CODING_AGENT_DIR` in a temp agent dir; the agent file is our copy at
   `tests/fixtures/agents/codebase-locator.md`, placed in the project's `.pi/agents/` (the directory pi-subagents reads).
 
+### Mid-turn `new_session` *(final fix wave)*
+
+One run on 2026-10-26 (`go test -race -tags live -count=1 -run 'TestIntSessionNewMidTurn$' -v ./...`), pig
+`0.5.3+1.4.0.74f46864`.
+
+| item | result | seconds |
+|---|---|---|
+| `TestIntSessionNewMidTurn` | PASS (one `claude` under pig with SlowTool parked; gone within the 10 s bound after `new_session`) | 17.0 |
+
+The debug log shows PiG aborting the run (`consumeQuery: frame loop exited, aborted=true`) and then delivering
+`session_shutdown` to the old runner (`WARNING: session_shutdown left state behind — contexts=1 …`, then
+`session_shutdown: clearing 0 shared sessions`) before the replacement's `session_start:new`. So `session_shutdown` does
+reach the bridge before the runner is replaced, but this run does not separate the shutdown kill from the abort that
+precedes it; `TestSessionShutdownKillsLiveClaudeCodeChildren` (unit, fake Claude Code that ignores SIGTERM) covers the
+shutdown kill on its own.
+
 ## Footprint *(Task 25)*
 
 Idle `pig --mode rpc` with the extension loaded and no prompt sent (`verify.sh` step 3, `footprint -p`, physical
