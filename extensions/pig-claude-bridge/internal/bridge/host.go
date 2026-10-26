@@ -100,5 +100,8 @@ func New(d Deps) *Bridge {
 	}
 	b.captures = promptcapture.NewCaptures(0, b.debugCaptureMiss)
 	b.queueStartupNotices()
+	for _, p := range d.Config.Problems {
+		b.debugf("%s", p)
+	}
 	return b
 }

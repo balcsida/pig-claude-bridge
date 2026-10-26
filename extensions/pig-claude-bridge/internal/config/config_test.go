@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -159,9 +160,71 @@ func TestLoad(t *testing.T) {
 		write(t, GlobalConfigPath(agentDir), `{ "provider": { "plan": "pro" }, }`)
 		write(t, ProjectConfigPath(cwd, configDirName), `{"askClaude":{"enabled":false}}`)
 
+		got := Load(agentDir, cwd, configDirName)
+		if len(got.Problems) != 1 || !strings.HasPrefix(got.Problems[0], "claude-bridge: failed to parse "+GlobalConfigPath(agentDir)+": ") {
+			t.Fatalf("problems = %q", got.Problems)
+		}
+		got.Problems = nil
 		want := Config{Provider: &ProviderConfig{}, AskClaude: &AskClaudeConfig{Enabled: ptr(false)}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("an invalid project file keeps the global settings", func(t *testing.T) {
+		agentDir, cwd := t.TempDir(), t.TempDir()
+		write(t, GlobalConfigPath(agentDir), `{"provider":{"plan":"max"},"askClaude":{"enabled":true}}`)
+		write(t, ProjectConfigPath(cwd, configDirName), `{"provider":{"plan":"pro"},`)
+
+		got := Load(agentDir, cwd, configDirName)
+		if len(got.Problems) != 1 || !strings.HasPrefix(got.Problems[0], "claude-bridge: failed to parse "+ProjectConfigPath(cwd, configDirName)+": ") {
+			t.Fatalf("problems = %q", got.Problems)
+		}
+		got.Problems = nil
+		want := Config{Provider: &ProviderConfig{Plan: ptr("max")}, AskClaude: &AskClaudeConfig{Enabled: ptr(true)}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("missing files are not problems", func(t *testing.T) {
+		if got := Load(t.TempDir(), t.TempDir(), configDirName).Problems; got != nil {
+			t.Fatalf("problems = %q", got)
+		}
+	})
+
+	t.Run("a null section in the project file keeps the global section", func(t *testing.T) {
+		agentDir, cwd := t.TempDir(), t.TempDir()
+		write(t, GlobalConfigPath(agentDir), `{"provider":{"plan":"max"},"askClaude":{"enabled":true}}`)
+		write(t, ProjectConfigPath(cwd, configDirName), `{"provider":null,"askClaude":null}`)
+
+		want := Config{Provider: &ProviderConfig{Plan: ptr("max")}, AskClaude: &AskClaudeConfig{Enabled: ptr(true)}}
 		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("keys match exactly, not case-insensitively", func(t *testing.T) {
+		agentDir, cwd := t.TempDir(), t.TempDir()
+		write(t, GlobalConfigPath(agentDir), `{"Provider":{"plan":"max"},"provider":{"Plan":"max","strictMcpConfig":true},"askClaude":{"ENABLED":true},"StartupNoticeShown":"2026-10-25"}`)
+
+		want := Config{Provider: &ProviderConfig{StrictMcpConfig: ptr(true)}, AskClaude: &AskClaudeConfig{}}
+		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("markStartupNoticeShown replaces an earlier date in place", func(t *testing.T) {
+		agentDir := t.TempDir()
+		path := GlobalConfigPath(agentDir)
+		write(t, path, `{"startupNoticeShown":"2026-01-02","provider":{"plan":"max"}}`)
+
+		if err := MarkStartupNoticeShown(agentDir, "2026-10-25"); err != nil {
+			t.Fatal(err)
+		}
+		want := "{\n  \"startupNoticeShown\": \"2026-10-25\",\n  \"provider\": {\n    \"plan\": \"max\"\n  }\n}\n"
+		if got := read(t, path); got != want {
+			t.Fatalf("got %q, want %q", got, want)
 		}
 	})
 

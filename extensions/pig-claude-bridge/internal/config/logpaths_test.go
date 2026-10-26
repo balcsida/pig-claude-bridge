@@ -14,16 +14,15 @@ func TestLogPaths(t *testing.T) {
 		if got := DebugLogPath(agentDir); got != override {
 			t.Fatalf("got %q, want %q", got, override)
 		}
-		if got := DebugLogPath(agentDir); got == filepath.Join(agentDir, "claude-bridge.log") {
-			t.Fatal("debug log must not resolve to the real one")
-		}
 	})
 
 	t.Run("resolves lazily from env changes made after first use", func(t *testing.T) {
 		t.Setenv("CLAUDE_BRIDGE_DEBUG_PATH", "")
-		first := DebugLogPath("/tmp/a")
+		if got := DebugLogPath("/tmp/a"); got != "/tmp/a/claude-bridge.log" {
+			t.Fatalf("got %q", got)
+		}
 		t.Setenv("CLAUDE_BRIDGE_DEBUG_PATH", "/tmp/log-paths-lazy-probe-debug.log")
-		if got := DebugLogPath("/tmp/a"); got != "/tmp/log-paths-lazy-probe-debug.log" || got == first {
+		if got := DebugLogPath("/tmp/a"); got != "/tmp/log-paths-lazy-probe-debug.log" {
 			t.Fatalf("got %q", got)
 		}
 		if got := DiagLogPath("/tmp/log-paths-lazy-probe"); got != "/tmp/log-paths-lazy-probe/claude-bridge-diag.log" {
