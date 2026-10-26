@@ -43,7 +43,7 @@ Config file `claude-bridge.json`, in two places (the project file is merged over
 - global: PiG's agent directory, `~/.pig/agent` by default (`$PIG_HOME/agent`, or `PIG_CODING_AGENT_DIR`). With `PIG_USE_PI_DIRS=1` PiG shares Pi's tree and this is `~/.pi/agent` (or `PI_CODING_AGENT_DIR`).
 - project: `<project>/.pig/claude-bridge.json`; under `PIG_USE_PI_DIRS=1`, `<project>/.pi/claude-bridge.json`.
 
-The extension asks PiG for both directories; nothing is hard-coded. A missing or unparseable file counts as empty. A key with a value of the wrong type is ignored, except `askClaude.allowFullMode` and `askClaude.defaultMode`, which fail closed (full mode denied, mode `none`).
+The extension asks PiG for both directories; nothing is hard-coded. A missing or unparseable file counts as empty; with `CLAUDE_BRIDGE_DEBUG` set, a parse failure is written to the debug log. A key with a value of the wrong type is ignored, except `askClaude.allowFullMode` and `askClaude.defaultMode`, which fail closed (full mode denied, mode `none`).
 
 ```json
 {

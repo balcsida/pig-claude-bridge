@@ -13,7 +13,7 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 | pi-claude-bridge | `6aa276a`, https://github.com/elidickinson/pi-claude-bridge |
 | cc-session-io | 0.4.0 (MIT) |
 | Pi compatibility surface | pi 1.4.0 (the Pi that PiG 0.5.3 tracks) |
-| `@modelcontextprotocol/sdk` | 1.29.0, only as the reference for the JSON-RPC responses the in-process MCP server produces |
+| `@modelcontextprotocol/sdk` | 1.31.0 (the TypeScript declares `^1.29.0`), only as the reference for the JSON-RPC responses the in-process MCP server produces |
 | Model catalog | `@earendil-works/pi-ai` 1.2.0, generated into `internal/models/catalog_gen.go` |
 
 ## Principal differences (D1 to D7)
@@ -55,17 +55,19 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 - `askClaude.enabled: "false"` (a string) disables the tool. The TypeScript treats any non-empty string as truthy.
 - A mistyped `askClaude.allowFullMode` denies full mode and a mistyped `askClaude.defaultMode` resolves to `none` (as the TypeScript, which denies on any non-`true` value); other mistyped keys are skipped where the TypeScript passes them through.
 - The notice date comes from `time.Now()`; the config file is rewritten only to add the notice key, preserving key order.
+- A config file that fails to parse is skipped as in the TypeScript, but the failure (`claude-bridge: failed to parse <path>: <err>`) goes to the debug log, when `CLAUDE_BRIDGE_DEBUG` is set, instead of `console.error`: an extension must not write to stderr.
 
 ### Prompt capture
 
 - Custom prompt sections arriving in one system message are rendered in name order. PiG delivers decoded maps without key order; the TypeScript keeps insertion order. No test pins the two-section case.
 - `PlaceCarriedAttachments` returns `(attachments, skipped)`, as the TypeScript object does. The audit-record test appends uuid-less lines directly and the test helper uses a fixed `/work` project path.
-- Two Pi-builder-dependent prompt-capture tests became literal-string assertions (the TypeScript tests depended on Pi's prompt builder). `CollectPromptSkills` guards against inheritance cycles by visiting each capture once (`visited` set), listing ancestors first and each skill file once.
+- Two Pi-builder-dependent prompt-capture tests became literal-string assertions (the TypeScript tests depended on Pi's prompt builder). `CollectPromptSkills` guards against inheritance cycles by visiting each capture once (`visited` set), listing ancestors first and each skill file once; at a cycle it stops silently where the TypeScript throws `Cyclic prompt inheritance` (projection still fails on one).
 
 ### Tool schemas and the MCP server
 
 - Advertised tool schemas serialise `properties` (and combinator-description key lists) in sorted order because `InputSchema` is `map[string]any`; Pi declares them in insertion order. `required` keeps its order.
 - Invalid `tools/call` params carry a fixed description instead of the SDK's zod text.
+- The MCP `initialize` result is serialised with sorted keys; the SDK writes its own key order. The values are the same.
 
 ### Session files and logs
 
@@ -73,6 +75,9 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 - The `APPEND` log line prints the advanced cursor (TypeScript prints the pre-advance cursor).
 - The `[moduleInstanceId]` bracket is dropped from log lines (the TypeScript `diag/*.mjs` parsers expect it); the deadlock-check regex was adapted. The `imported roles:` debug line and the sanitized-id list are dropped.
 - Stderr tail counts runes where the SDK counts UTF-16 units.
+- An empty `CLAUDE_CONFIG_DIR` counts as unset (`??` in JavaScript would use it), and with `HOME` unset the Claude config dir falls back to the account's home directory instead of a relative `.claude`.
+- Verifying an empty session file reports `err=no records` where cc-session-io reports `"undefined" is not valid JSON`.
+- An attachment whose `AfterIndex` is out of range is skipped without cc-session-io's console warning (no stderr in an extension).
 - `pending_permission_requests` redelivery is not implemented: it is never sent without `canUseTool`.
 - The package is Unix-only (`syscall.WaitStatus`).
 
@@ -81,7 +86,9 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 - `Details.executionTime` is an `int64`.
 - The "Claude Code returned an error result" replacement is unreachable, as in the TypeScript (the loop stops at the error result). An error result drops the mirror, while a process exit or panic marks rebuild (the TypeScript drops the mirror on exit too).
 - Abort lifetime is proven by the live smoke's tool round trip. Abort follows `ctx.Signal()`, PiG's run-scoped signal, where the plan said `ctx.Done()`: the per-request `Done()` is cancelled when each provider call ends, which would kill a query parked at a tool call between calls; `Done()` is used only when a context carries no signal.
-- Abort is honoured while Claude Code starts: the call's cancellation reaches the spawn until the `initialize` answer arrives (spike S2 saw about 4 s with user `SessionStart` hooks), so an abort then ends the turn as aborted instead of waiting; after that, the stream's own abort wiring takes over, so a parked query still survives between calls. The isolated and AskClaude paths spawn under the call's context. `claude --version` is bounded by 10 s and runs once at a time; a probe that times out is logged and does not fail the query.
+- Abort is honoured while Claude Code starts: the call's cancellation reaches the spawn until the `initialize` answer arrives (spike S2 saw about 4 s, inferred to be user `SessionStart` hooks), so an abort then ends the turn as aborted instead of waiting; after that, the stream's own abort wiring takes over, so a parked query still survives between calls. The isolated and AskClaude paths spawn under the call's context. `claude --version` is bounded by 10 s and runs once at a time; a probe that times out is logged and does not fail the query, and an abort during the probe ends the turn as aborted without caching a result. Only the leading `x.y.z` of the version output is read.
+- The cost of a turn leaves out pi-ai's `cost.tiers` and `cacheWrite1h`. The registered models carry zero rates and no tiers, so the cost is zero either way.
+- Every stream event carries a deep copy of the turn so far, where the TypeScript hands out the live object: PiG may read an event after the bridge moves on. The copying grows with the square of the turn's length.
 - The startup notice is shown only when PiG's mode is `tui`, as in the TypeScript, and stays pending otherwise. The mode is read from each call's context (`Host.Mode()`); the TypeScript remembers it from `session_start`. `reportHeldRateLimit` runs at the start of each call rather than inside the consume loop.
 - Prompt-too-long: the CLI exits 1 with empty stderr after the input ends; the bridge surfaces the `is_error` text (`resultErrorText`), not the bare exit.
 
@@ -90,6 +97,7 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 - Headers go to the debug log only (D1).
 - The reset time renders as en-US `3:04:05 PM` with a plain space, where modern Node's `toLocaleTimeString` uses U+202F.
 - The `onResponse`-throw case has no PiG counterpart.
+- Non-string elements of a result's `errors` are rendered with Go's `fmt.Sprint`, which differs from JavaScript's `String()` for objects.
 
 ### Isolated queries
 
@@ -100,12 +108,13 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 ### AskClaude
 
 - `enabled: "false"` as above; rendering as lines (D6); rune-based truncation; `Definition(b, cfg, agentDir, host, requestContext)` has the signature the import cycle forces; the deprecation notice date comes from `time.Now()`.
-- An aborted call differs as described under the provider stream. A mid-run abort returns `Error: Aborted` (the tool fails), where the TypeScript returns the partial text gathered so far with `stopReason: "cancelled"`.
+- A mid-run abort returns the partial text gathered so far, as the TypeScript does; an abort before Claude Code starts fails the tool with `Error: Aborted`.
 
 ### Protocol client
 
 - There is no Node Agent SDK: the client spawns `claude` with `--permission-mode bypassPermissions` and the SDK's argv, and speaks the newline-delimited JSON control protocol. Argv and the `initialize` request are pinned by a snapshot recorded from the Node SDK 0.3.310 (`scripts/dev/record-sdk-argv.mjs`).
 - Every Claude Code child gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, overwriting an inherited value, as the TypeScript sets it on its own `process.env` at load (`index.ts:2465`) for every child to inherit. The argv snapshot's recorder builds the environment without `process.env`, so the snapshot comparisons leave this variable out and `TestBuildEnv` pins it.
+- `Close` whose context ends before the child exits kills the child at once; the SDK's close always escalates SIGTERM after 2 s and SIGKILL 5 s later.
 - A `pathToClaudeCodeExecutable` ending in `.js`, `.mjs` or `.ts` runs as `node <path> …`, for `--version` and the query, as the SDK does; without `node` on `PATH` the call fails with a notice.
 - Between turns no Claude Code process is alive in either bridge: the query ends at the end of a turn and the next turn resumes the session. PiG's `new_session` replaces the extension runner (D70) and the pre-`/new` runner was observed gone after the next prompt.
 - Claude Code children are killed at `session_shutdown`, the counterpart of the SDK's `killAll` at process exit: every live query is aborted, then every child still running gets SIGKILL (`ccproto.Shutdown`). This matters because Claude Code parked at a tool call does not exit when its stdin ends and keeps calling the API. Per PiG's docs (`extensions.md`, `rpc.md`, `cli-integration.md`) `session_shutdown` is sent on exit (end of input, SIGTERM and SIGHUP), on `/new`, `/resume`, `/fork` and `/clone`, on the RPC `new_session`, `switch_session`, `fork` and `clone`, and on reload. Not covered: a PiG killed with SIGKILL or crashing sends no `session_shutdown`, and its Claude Code children outlive it. `TestIntSessionNewMidTurn` (live) checks the mid-turn `new_session` case; see [verification.md](verification.md).
