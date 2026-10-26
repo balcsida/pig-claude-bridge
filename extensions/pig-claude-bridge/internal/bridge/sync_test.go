@@ -301,8 +301,8 @@ func TestConcurrentSessionsDoNotShareState(t *testing.T) {
 					return
 				}
 				ids = append(ids, res.SessionID)
-				if st := b.sessionStateFor(pi); st == nil || st.PiSessionID != pi && st.PiSessionID != "" || st.Cwd != cwd && st.Cwd != "" {
-					t.Errorf("%s: foreign state %+v", pi, st)
+				if st := b.sessionStateFor(pi); st == nil || st.PiSessionID != pi || st.Cwd != cwd {
+					t.Errorf("%s: state is not its own: %+v", pi, st)
 					return
 				}
 				if i == 50 {
@@ -318,6 +318,28 @@ func TestConcurrentSessionsDoNotShareState(t *testing.T) {
 	a, c := b.sessionStateFor("pi-a"), b.sessionStateFor("pi-b")
 	if a.SessionID == c.SessionID {
 		t.Fatal("sessions share a Claude Code session")
+	}
+}
+
+// A failed verification reaches the user as a warning and the diag log as an entry.
+func TestVerifyWrittenSessionWarnsAndDumps(t *testing.T) {
+	b, _, agentDir := newTestBridge(t, false)
+	host := &recordingHost{}
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"sessionId":"s"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b.verifyWrittenSession(host, path, "s", 2, "/work")
+	if len(host.notices) != 1 || !strings.HasPrefix(host.notices[0], "warning: Session file issue: record count mismatch — expected=2 actual=1") {
+		t.Fatalf("notices = %q", host.notices)
+	}
+	diag, err := os.ReadFile(filepath.Join(agentDir, "claude-bridge-diag.log"))
+	if err != nil || !strings.Contains(string(diag), `"label":"session_verify_fail"`) || !strings.Contains(string(diag), `"cwd":"/work"`) {
+		t.Fatalf("diag log = %s, %v", diag, err)
+	}
+	b.verifyWrittenSession(nil, path, "s", 1, "/work") // healthy: nothing to say, and a nil host is fine
+	if len(host.notices) != 1 {
+		t.Fatalf("a healthy file warned: %q", host.notices)
 	}
 }
 
@@ -343,6 +365,15 @@ func TestRebuildKeepsMarkSetSinceSnapshot(t *testing.T) {
 		b.storeRebuilt("pi-1", snapshot, rebuilt)
 		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild || !st.ForceRotate {
 			t.Fatalf("state = %+v", st)
+		}
+	})
+	t.Run("a mark stored without markSeq", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		snapshot := b.sessionStateFor("pi-1") // no mirror yet, as in a first turn
+		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
+		b.storeRebuilt("pi-1", snapshot, rebuilt)
+		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild {
+			t.Fatalf("the mark was lost: %+v", st)
 		}
 	})
 	t.Run("no mark since", func(t *testing.T) {

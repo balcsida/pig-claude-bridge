@@ -20,8 +20,8 @@ type SessionState struct {
 	// fresh id and leaves the old file alone instead of racing it.
 	ForceRotate bool
 
-	// markSeq counts markRebuildForSession calls, so a sync can tell a mark that
-	// landed during its file I/O from the one it is consuming.
+	// markSeq counts markRebuildForSession and markSessionNeedsRebuild calls, so a
+	// sync can tell a mark that landed during its file I/O from the one it is consuming.
 	markSeq uint64
 }
 
@@ -159,7 +159,9 @@ func (b *Bridge) storeRebuilt(piSessionID string, snapshot *SessionState, rebuil
 		if snapshot != nil {
 			was = *snapshot
 		}
-		if cur.markSeq != was.markSeq {
+		// A mark counted by markSeq, or one stored without it (completeQuery records a
+		// missed steer on a mirror that had none when the steer was missed).
+		if cur.markSeq != was.markSeq || cur.NeedsRebuild && !was.NeedsRebuild {
 			rebuilt.NeedsRebuild = true
 		}
 		if cur.ForceRotate && !was.ForceRotate {
