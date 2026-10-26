@@ -22,6 +22,7 @@ func newStreamContext(toolNames ...string) (*QueryContext, *sdk.ModelEventStream
 	q := newQueryContext()
 	stream := sdk.CreateAssistantMessageEventStream()
 	q.currentPiStream = stream
+	q.model = testModel
 	q.resetTurnState(testModel)
 	q.customToolNameToPi = map[string]string{}
 	for _, n := range toolNames {
@@ -30,8 +31,9 @@ func newStreamContext(toolNames ...string) (*QueryContext, *sdk.ModelEventStream
 	return q, stream
 }
 
-// drain returns the events pushed so far. The SDK queue replays from the start; a
-// stream without a terminal event never closes, so the wait is bounded.
+// drain returns the events pushed and not yet read: the SDK queue hands each event
+// out once, so a later drain sees only later events. A stream without a terminal
+// event never closes, so the wait is bounded.
 func drain(stream *sdk.ModelEventStream) []map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()

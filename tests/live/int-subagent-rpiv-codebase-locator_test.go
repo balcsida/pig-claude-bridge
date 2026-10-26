@@ -33,7 +33,7 @@ func TestIntSubagentRpivCodebaseLocator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing rpiv codebase-locator fixture: %v", err)
 	}
-	agentDir := agentDirWith(t, map[string]string{"settings.json": `{}`})
+	agentDir := t.TempDir()
 	project := t.TempDir()
 	for path, content := range map[string]string{
 		filepath.Join(".pi", "agents", "codebase-locator.md"): string(locator),
@@ -56,6 +56,7 @@ func TestIntSubagentRpivCodebaseLocator(t *testing.T) {
 		Env:            map[string]string{"PIG_CODING_AGENT_DIR": agentDir},
 		DefaultTimeout: testTimeout,
 	})
+	logDebugTailOnFailure(t, h, 6000)
 	reentrantCount := func() int { return len(reentrantMarker.FindAllString(readDebugLog(t, h), -1)) }
 
 	runAgentPrompt := func(background bool, expectedMarker string) {

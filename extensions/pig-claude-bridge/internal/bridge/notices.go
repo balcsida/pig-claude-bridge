@@ -85,8 +85,9 @@ func (b *Bridge) debugCaptureMiss(d promptcapture.Diagnostic) {
 		len(d.SystemPrompt), len(first.Key), at, at, d.SystemPrompt[from:to], len(d.Matches))
 }
 
-// longContextSettings reads the plan facts that decide whether a [1m] id is served.
-func longContextSettings(p *config.ProviderConfig) models.LongContextSettings {
+// LongContextSettings reads the plan facts that decide whether a [1m] id is served, for
+// the provider registration and the bridge alike.
+func LongContextSettings(p *config.ProviderConfig) models.LongContextSettings {
 	s := models.LongContextSettings{Plan: "pro"}
 	if p == nil {
 		return s

@@ -56,6 +56,13 @@ func (b *Bridge) addContext(piSessionID string) *QueryContext {
 	return c
 }
 
+// isAbandoned reports whether discardRewrittenQuery killed c's query.
+func (c *QueryContext) isAbandoned() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.abandoned
+}
+
 func (b *Bridge) isStale(c *QueryContext) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

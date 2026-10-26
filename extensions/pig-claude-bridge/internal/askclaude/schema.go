@@ -73,18 +73,17 @@ var Unset any = unset{}
 // ResolveMode is the mode of a call: the default when mode is Unset, an error for anything
 // but "read", "none" or an allowed "full".
 func ResolveMode(mode any, d Defaults) (Mode, error) {
-	resolved := mode
 	if _, omitted := mode.(unset); omitted {
 		return d.Mode, nil
 	}
-	m, _ := resolved.(string)
+	m, _ := mode.(string)
 	switch Mode(m) {
 	case ModeFull, ModeRead, ModeNone:
 	default:
-		if resolved == nil {
-			resolved = "null"
+		if mode == nil {
+			mode = "null"
 		}
-		return "", fmt.Errorf("Invalid AskClaude mode: %v", resolved)
+		return "", fmt.Errorf("Invalid AskClaude mode: %v", mode)
 	}
 	if Mode(m) == ModeFull && !d.AllowFull {
 		return "", errors.New("AskClaude full mode is disabled.")

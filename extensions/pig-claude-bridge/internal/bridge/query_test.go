@@ -29,16 +29,16 @@ func TestQueryContextClass(t *testing.T) {
 		if err != nil || len(blocks) != 0 {
 			t.Fatalf("blocks = %v, err = %v", blocks, err)
 		}
-		if err := c.appendTurnBlock(map[string]any{"type": "text", "text": "hello"}); err != nil {
-			t.Fatal(err)
-		}
+		c.mu.Lock()
+		c.addBlockLocked(map[string]any{"type": "text", "text": "hello"})
+		c.mu.Unlock()
 		content := c.turnOutput["content"].([]any)
 		if len(content) != 1 || content[0].(map[string]any)["text"] != "hello" {
 			t.Fatalf("content = %v", content)
 		}
 		again, _ := c.turnBlocks()
-		if !reflect.DeepEqual(again, content) {
-			t.Fatalf("turnBlocks = %v, content = %v", again, content)
+		if len(again) != 1 || &again[0] != &content[0] {
+			t.Fatalf("turnBlocks must be turnOutput.content itself, not a copy: %v vs %v", again, content)
 		}
 	})
 	t.Run("resetTurnState preserves turnToolCallIds", func(t *testing.T) {
@@ -71,14 +71,21 @@ func TestQueryContextClass(t *testing.T) {
 			t.Fatal("maps not cleared")
 		}
 	})
-	t.Run("newAssistantOutput is the zeroed assistant message", func(t *testing.T) {
+	t.Run("newAssistantOutput carries text, stop reason and error message, usage zeroed", func(t *testing.T) {
 		before := time.Now().UnixMilli()
-		m := newAssistantOutput(fakeModel)
+		m := newAssistantOutput(fakeModel, "", "stop", "")
 		if m["role"] != "assistant" || m["api"] != "anthropic" || m["provider"] != "anthropic" || m["model"] != "test-model" || m["stopReason"] != "stop" {
 			t.Fatalf("m = %v", m)
 		}
 		if c, ok := m["content"].([]any); !ok || len(c) != 0 {
 			t.Fatalf("content = %#v", m["content"])
+		}
+		if _, ok := m["errorMessage"]; ok {
+			t.Fatal("an empty error message is set")
+		}
+		failed := newAssistantOutput(fakeModel, "partial", "error", "boom")
+		if !reflect.DeepEqual(failed["content"], []any{map[string]any{"type": "text", "text": "partial"}}) || failed["stopReason"] != "error" || failed["errorMessage"] != "boom" {
+			t.Fatalf("failed = %v", failed)
 		}
 		usage := m["usage"].(map[string]any)
 		cost := usage["cost"].(map[string]any)
@@ -241,6 +248,44 @@ func TestMakePromptStream(t *testing.T) {
 		<-taken
 		if err == nil {
 			t.Fatal("push acked although the consumer abandoned it")
+		}
+	})
+	t.Run("a Next parked on an empty queue returns false when its ctx is cancelled", func(t *testing.T) {
+		ps := newPromptStream()
+		ctx, cancel := context.WithCancel(context.Background())
+		parked := make(chan bool, 1)
+		go func() { _, ok := ps.Next(ctx); parked <- ok }()
+		time.Sleep(20 * time.Millisecond) // let Next park on the empty queue
+		cancel()
+		select {
+		case ok := <-parked:
+			if ok {
+				t.Fatal("Next returned a message")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Next stayed parked after its ctx was cancelled")
+		}
+	})
+	t.Run("End then a cancelled Next rejects what is still queued", func(t *testing.T) {
+		ps := newPromptStream()
+		queued := pushAsync(ps, textMsg("queued"))
+		for {
+			ps.mu.Lock()
+			n := len(ps.queue)
+			ps.mu.Unlock()
+			if n == 1 {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		ps.End()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, ok := ps.Next(ctx); ok {
+			t.Fatal("a cancelled Next handed out a message")
+		}
+		if err := waitErr(t, queued); err == nil || !strings.Contains(err.Error(), "closed") {
+			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("rejects a push made after the consumer abandoned the stream", func(t *testing.T) {

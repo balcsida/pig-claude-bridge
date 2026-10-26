@@ -54,10 +54,6 @@ type Bridge struct {
 	historyRewritten map[string]struct{}
 	// contexts are the live queries armStaleContexts marks.
 	contexts map[*QueryContext]struct{}
-	// abandoned are the queries discardRewrittenQuery killed; their completion must
-	// not touch the session or the stream their replacement owns. consumeQuery
-	// removes its client's entry when it exits.
-	abandoned map[ccproto.Client]struct{}
 	// cwds maps a pi session id to its working directory.
 	cwds map[string]string
 	// pendingSummary is the pi session whose compaction summary is about to run.
@@ -79,6 +75,8 @@ type Bridge struct {
 	// queries tracks the goroutines a provider call starts, so a shutdown or a test
 	// can wait for them.
 	queries sync.WaitGroup
+	// resultFallbackHook is a test seam run inside the result fallback's critical section.
+	resultFallbackHook func()
 
 	nextCLIDebugSeq atomic.Int64
 }
@@ -94,11 +92,13 @@ func New(d Deps) *Bridge {
 		syncLocks:        map[string]*sync.Mutex{},
 		historyRewritten: map[string]struct{}{},
 		contexts:         map[*QueryContext]struct{}{},
-		abandoned:        map[ccproto.Client]struct{}{},
 		cwds:             map[string]string{},
-		longContext:      longContextSettings(d.Config.Provider),
+		longContext:      LongContextSettings(d.Config.Provider),
 	}
 	b.captures = promptcapture.NewCaptures(0, b.debugCaptureMiss)
 	b.queueStartupNotices()
+	for _, p := range d.Config.Problems {
+		b.debugf("%s", p)
+	}
 	return b
 }

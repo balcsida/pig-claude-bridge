@@ -7,9 +7,12 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 )
 
 type Config struct {
@@ -20,6 +23,9 @@ type Config struct {
 	AskClaude                 *AskClaudeConfig `json:"askClaude,omitempty"`
 	// Provider is low-level Claude Agent SDK plumbing. Most users won't need it.
 	Provider *ProviderConfig `json:"provider,omitempty"`
+	// Problems lists the files Load could not read or parse, worded as the TypeScript's
+	// console.error; the extension may not write stderr, so the bridge debug-logs them.
+	Problems []string `json:"-"`
 }
 
 type AskClaudeConfig struct {
@@ -65,12 +71,17 @@ func ClaudeCodeSettings(p *ProviderConfig) map[string]any {
 }
 
 // Load merges the project file over the global file per key; a key the project file
-// does not set keeps the global value. Unreadable or unparseable files count as empty.
+// does not set keeps the global value. Unreadable or unparseable files count as empty
+// and are listed in Problems.
 func Load(agentDir, cwd, configDirName string) Config {
 	cfg := Config{}
 	for _, path := range []string{GlobalConfigPath(agentDir), ProjectConfigPath(cwd, configDirName)} {
-		if data, err := os.ReadFile(path); err == nil {
-			decodeValidKeys(data, &cfg)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			err = decodeValidKeys(data, &cfg)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			cfg.Problems = append(cfg.Problems, fmt.Sprintf("claude-bridge: failed to parse %s: %v", path, err))
 		}
 	}
 	if cfg.AskClaude == nil {
@@ -84,11 +95,11 @@ func Load(agentDir, cwd, configDirName string) Config {
 
 // decodeValidKeys merges the keys of a JSON file into cfg, skipping any key whose
 // value has the wrong type (TS passes those through; encoding/json would leave a
-// zero-value pointer behind). A syntax error leaves cfg untouched.
-func decodeValidKeys(data []byte, cfg *Config) {
+// zero-value pointer behind). A syntax error leaves cfg untouched and is returned.
+func decodeValidKeys(data []byte, cfg *Config) error {
 	var raw map[string]json.RawMessage
-	if json.Unmarshal(data, &raw) != nil {
-		return
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
 	}
 	for _, section := range []struct {
 		key string
@@ -106,6 +117,7 @@ func decodeValidKeys(data []byte, cfg *Config) {
 		}
 	}
 	decodeKeys(raw, cfg)
+	return nil
 }
 
 // failClosed replaces a mistyped mode gate with a value that denies: dropping it would
@@ -121,9 +133,21 @@ func failClosed(keys map[string]json.RawMessage) {
 	}
 }
 
-// decodeKeys unmarshals each key into dst only if it decodes cleanly into a fresh value.
+// decodeKeys unmarshals each key into dst only if it names a field exactly and decodes
+// cleanly into a fresh value. encoding/json would also match other casings; JavaScript
+// object keys do not.
 func decodeKeys(keys map[string]json.RawMessage, dst any) {
+	t := reflect.TypeOf(dst).Elem()
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
 	for k, v := range keys {
+		if !slices.ContainsFunc(reflect.VisibleFields(t), func(f reflect.StructField) bool {
+			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			return name == k && name != "-"
+		}) {
+			continue
+		}
 		obj, _ := json.Marshal(map[string]json.RawMessage{k: v})
 		if json.Unmarshal(obj, reflect.New(reflect.TypeOf(dst).Elem()).Interface()) == nil {
 			_ = json.Unmarshal(obj, dst)
@@ -196,18 +220,9 @@ func parseObject(data []byte) (keys []string, values map[string]json.RawMessage,
 		k, _ := dec.Token()
 		var skip json.RawMessage
 		_ = dec.Decode(&skip)
-		if name := k.(string); !contains(keys, name) {
+		if name := k.(string); !slices.Contains(keys, name) {
 			keys = append(keys, name)
 		}
 	}
 	return keys, values, true
-}
-
-func contains(s []string, v string) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }

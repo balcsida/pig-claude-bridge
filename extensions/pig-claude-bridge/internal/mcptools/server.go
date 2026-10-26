@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/convert"
@@ -26,6 +27,9 @@ const (
 	codeInternalError  = -32603
 )
 
+// ToolDef is one tool the server advertises. Handler runs a tools/call with the
+// tool_use id Claude Code stamped on it; ctx is cancelled when Claude Code cancels
+// the request.
 type ToolDef struct {
 	Name, Description string
 	InputSchema       map[string]any
@@ -41,7 +45,7 @@ type Server struct {
 
 // NewServer rejects any tool whose input schema is not an object schema.
 func NewServer(name string, tools []ToolDef) (*Server, error) {
-	s := &Server{name: name, tools: tools, byName: map[string]ToolDef{}}
+	s := &Server{name: name, tools: slices.Clone(tools), byName: map[string]ToolDef{}}
 	for _, t := range tools {
 		s.byName[t.Name] = t
 	}
@@ -163,6 +167,9 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, error) 
 	}
 	if p.Arguments == nil {
 		p.Arguments = map[string]any{}
+	}
+	if tool.Handler == nil {
+		return nil, fmt.Errorf("%s: tool has no handler", tool.Name)
 	}
 	res, err := tool.Handler(ctx, id, p.Arguments)
 	if err != nil {

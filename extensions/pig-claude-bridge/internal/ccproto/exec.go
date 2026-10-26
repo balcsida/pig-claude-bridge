@@ -47,18 +47,22 @@ var semverRE = regexp.MustCompile(`^\s*(\d+\.\d+\.\d+)`)
 var VersionTimeout = 10 * time.Second
 
 // Version runs `<exe> --version` and returns the leading semver ("2.1.310 (Claude Code)" gives "2.1.310").
-func Version(exe string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), VersionTimeout)
+// ctx ending stops the probe and its error is returned as is.
+func Version(ctx context.Context, exe string) (string, error) {
+	probe, cancel := context.WithTimeout(ctx, VersionTimeout)
 	defer cancel()
 	name, args, err := commandLine(exe, "--version")
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(probe, name, args...)
 	// A grandchild can keep stdout open after the kill; stop waiting for it.
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if probe.Err() != nil {
 		return "", fmt.Errorf("run %s --version: no answer within %s", exe, VersionTimeout)
 	}
 	if err != nil {
@@ -71,10 +75,10 @@ func Version(exe string) (string, error) {
 	return m[1], nil
 }
 
-// OlderThan reports whether version is numerically older than min; unparsable input is not older.
-func OlderThan(version, min string) bool {
+// OlderThan reports whether version is numerically older than minimum; unparsable input is not older.
+func OlderThan(version, minimum string) bool {
 	a, okA := parseSemver(version)
-	b, okB := parseSemver(min)
+	b, okB := parseSemver(minimum)
 	if !okA || !okB {
 		return false
 	}

@@ -1,0 +1,3 @@
+{"type":"control_request","request_id":"d1","request":{"subtype":"mcp_message","server_name":"srv","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}}
+{"type":"control_request","request_id":"d1","request":{"subtype":"mcp_message","server_name":"srv","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}}
+{"type":"system","subtype":"status","n":1}

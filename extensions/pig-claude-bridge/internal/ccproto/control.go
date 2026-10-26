@@ -190,8 +190,8 @@ func (p *Process) handleRequest(ctx context.Context, h frameHead) {
 		p.sendError(h.RequestID, "canUseTool callback is not provided.")
 	case "hook_callback":
 		p.sendError(h.RequestID, "No hook callback found for ID: "+req.CallbackID)
-	case "request_user_dialog":
-		// left unanswered (reference 2.7)
+	case "request_user_dialog", "remote_tool_call", "remote_plumbing_call", "remote_tools_probe", "remote_tools_reannounce":
+		// left unanswered, as the SDK leaves them (reference 2 and 2.7)
 	default:
 		p.sendError(h.RequestID, "Unsupported control request subtype: "+req.Subtype)
 	}

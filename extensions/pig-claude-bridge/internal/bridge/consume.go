@@ -53,9 +53,6 @@ type exitFailure struct{ err error }
 func (e *exitFailure) Error() string { return e.err.Error() }
 func (e *exitFailure) Unwrap() error { return e.err }
 
-// resultFallbackHook is a test seam run inside the result fallback's critical section.
-var resultFallbackHook func()
-
 const closeTimeout = 10 * time.Second
 
 func (b *Bridge) registerContext(q *QueryContext) {
@@ -68,22 +65,6 @@ func (b *Bridge) unregisterContext(q *QueryContext) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.contexts, q)
-}
-
-// isQueryAbandoned reports whether discardRewrittenQuery killed the query.
-func (b *Bridge) isQueryAbandoned(client ccproto.Client) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	_, ok := b.abandoned[client]
-	return ok
-}
-
-func (b *Bridge) takeAbandoned(client ccproto.Client) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	_, ok := b.abandoned[client]
-	delete(b.abandoned, client)
-	return ok
 }
 
 // contextForToolResults finds the live query a turn's results belong to, by the
@@ -129,9 +110,9 @@ func (c *QueryContext) ownsToolCall(id string) bool {
 // resolveMcpTools lists the pi tools to serve over MCP, minus excludeToolName,
 // with the name maps in both directions (each under the exact and the lower-cased
 // SDK name, as Claude sometimes lowercases it).
-func resolveMcpTools(context map[string]any, excludeToolName string) (mcpTools []map[string]any, customToolNameToSdk, customToolNameToPi map[string]string) {
+func resolveMcpTools(piContext map[string]any, excludeToolName string) (mcpTools []map[string]any, customToolNameToSdk, customToolNameToPi map[string]string) {
 	customToolNameToSdk, customToolNameToPi = map[string]string{}, map[string]string{}
-	for _, raw := range list(context["tools"]) {
+	for _, raw := range list(piContext["tools"]) {
 		tool := obj(raw)
 		name := str(tool["name"])
 		if tool == nil || name == excludeToolName {
@@ -177,7 +158,7 @@ func (b *Bridge) toolCallHandler(q *QueryContext, toolName string) func(ctx cont
 			return result, nil
 		}
 		reply := make(chan convert.McpResult, 1)
-		q.pendingToolCalls[toolUseID] = PendingToolCall{ToolName: toolName, Resolve: func(r convert.McpResult) {
+		q.pendingToolCalls[toolUseID] = PendingToolCall{ToolName: toolName, reply: reply, Resolve: func(r convert.McpResult) {
 			select {
 			case reply <- r:
 			default:
@@ -189,9 +170,12 @@ func (b *Bridge) toolCallHandler(q *QueryContext, toolName string) func(ctx cont
 		case r := <-reply:
 			return r, nil
 		case <-ctx.Done():
-			// Claude Code cancelled the call: nothing will read the reply.
+			// Claude Code cancelled the call, so a result resolved into it now goes nowhere,
+			// as in the TypeScript. Drop this call's entry, not one a later call registered.
 			q.mu.Lock()
-			delete(q.pendingToolCalls, toolUseID)
+			if p, ok := q.pendingToolCalls[toolUseID]; ok && p.reply == reply {
+				delete(q.pendingToolCalls, toolUseID)
+			}
 			q.mu.Unlock()
 			return convert.McpResult{}, ctx.Err()
 		}
@@ -235,7 +219,9 @@ func (b *Bridge) consumeQuery(ctx context.Context, host Host, q *QueryContext, c
 			b.debugf("consumeQuery: recovered from panic: %v\n%s", r, debug.Stack())
 			res.Failure = fmt.Errorf("claude bridge internal error: %v", r)
 		}
-		res.Abandoned = b.takeAbandoned(client)
+		q.mu.Lock()
+		res.Abandoned = q.abandoned
+		q.mu.Unlock()
 	}()
 	recordPath := os.Getenv("CLAUDE_BRIDGE_RECORD_STREAM")
 	frames := client.Frames()
@@ -292,6 +278,10 @@ func (b *Bridge) awaitExit(ctx context.Context, client ccproto.Client) error {
 	select {
 	case <-client.Done():
 	case <-ctx.Done():
+	}
+	// An abort wins over the exit it may have caused, as wasAborted does in the
+	// TypeScript, whichever of the two the select saw first.
+	if ctx.Err() != nil {
 		return nil
 	}
 	err := client.Wait()
@@ -389,8 +379,8 @@ func (b *Bridge) consumeFrame(host Host, q *QueryContext, frame map[string]any, 
 		func() {
 			q.mu.Lock()
 			defer q.mu.Unlock() // a panic below must not leave q.mu held for failQuery
-			if resultFallbackHook != nil {
-				resultFallbackHook()
+			if b.resultFallbackHook != nil {
+				b.resultFallbackHook()
 			}
 			if q.currentPiStream != nil && q.turnOutput != nil && !q.turnSawStreamEvent && frame["subtype"] == "success" {
 				q.ensureTurnStartedLocked()
@@ -402,8 +392,8 @@ func (b *Bridge) consumeFrame(host Host, q *QueryContext, frame map[string]any, 
 			}
 		}()
 	case "system":
-		if frame["subtype"] == "init" {
-			res.CapturedSessionID = str(frame["session_id"])
+		if id := str(frame["session_id"]); frame["subtype"] == "init" && id != "" {
+			res.CapturedSessionID = id
 		}
 	case "user":
 		// Prompt and tool-result echoes carry no content events; replay
@@ -591,21 +581,24 @@ func (b *Bridge) killClient(client ccproto.Client) {
 // parked at the next tool call. owner is the opening run's context, already wired
 // to onAbort by the caller.
 func (b *Bridge) newRunBinder(q *QueryContext, owner context.Context, onAbort func()) (bind func(ctx context.Context, runStream *sdk.ModelEventStream), unbind func()) {
-	var mu sync.Mutex // bind runs on the provider-call goroutine, unbind at teardown
+	// bind runs on the provider-call goroutine, unbind at teardown. mu is held across a
+	// whole bind, and closed keeps a bind that loses the race to unbind from registering.
+	var mu sync.Mutex
 	var stop func() bool
-	unbind = func() {
-		mu.Lock()
-		defer mu.Unlock()
+	closed := false
+	stopLocked := func() {
 		if stop != nil {
 			stop()
 			stop = nil
 		}
 	}
+	unbind = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		closed = true
+		stopLocked()
+	}
 	bind = func(ctx context.Context, runStream *sdk.ModelEventStream) {
-		unbind()
-		if ctx == nil || ctx == owner {
-			return
-		}
 		onRunAbort := func() {
 			q.mu.Lock()
 			_, ended := q.completedStreams[runStream]
@@ -614,14 +607,19 @@ func (b *Bridge) newRunBinder(q *QueryContext, owner context.Context, onAbort fu
 				onAbort()
 			}
 		}
-		if ctx.Err() != nil {
-			onRunAbort()
+		mu.Lock()
+		stopLocked()
+		if closed || ctx == nil || ctx == owner {
+			mu.Unlock()
 			return
 		}
-		s := context.AfterFunc(ctx, onRunAbort)
-		mu.Lock()
-		stop = s
+		if ctx.Err() == nil {
+			stop = context.AfterFunc(ctx, onRunAbort)
+			mu.Unlock()
+			return
+		}
 		mu.Unlock()
+		onRunAbort()
 	}
 	return bind, unbind
 }
@@ -649,15 +647,13 @@ func (b *Bridge) discardRewrittenQuery(q *QueryContext, reason string) {
 	q.mu.Lock()
 	discarded := q.activeQuery
 	q.activeQuery = nil
+	q.abandoned = q.abandoned || discarded != nil
 	q.turnToolCallIDs = []string{}
 	ps := q.promptStream
 	q.promptStream = nil
 	q.mu.Unlock()
 
 	b.mu.Lock()
-	if discarded != nil {
-		b.abandoned[discarded] = struct{}{}
-	}
 	// Leaving the routing set stops this result coming straight back here.
 	delete(b.contexts, q)
 	if q.piSessionID != "" {
@@ -800,89 +796,4 @@ func (b *Bridge) pushSteer(ctx context.Context, q *QueryContext, steer []any) {
 		return
 	}
 	b.debugf("provider: steer written to CC stdin before tool result: %s", truncateRunes(text, 60))
-}
-
-// extractUserPrompt is the current user turn as text, or ok=false when the last
-// message is not a user message. Empty messages are dropped before joining, so an
-// all-empty turn yields "" and trips the caller's empty-prompt guard.
-func extractUserPrompt(messages []map[string]any) (prompt string, ok bool) {
-	turn := messages[turnStart(messages):]
-	if len(turn) == 0 {
-		return "", false
-	}
-	var parts []string
-	for _, m := range turn {
-		text, isString := m["content"].(string)
-		if !isString {
-			text = convert.MessageContentToText(m["content"])
-		}
-		if text != "" {
-			parts = append(parts, text)
-		}
-	}
-	return strings.Join(parts, "\n"), true
-}
-
-// extractUserPromptBlocks is the current user turn as content blocks, or nil when
-// it has no image (the caller falls back to the text prompt).
-func (b *Bridge) extractUserPromptBlocks(messages []map[string]any) ([]any, error) {
-	turn := messages[turnStart(messages):]
-	if len(turn) == 0 {
-		return nil, nil
-	}
-	hasImage := false
-	blocks := []any{}
-	for _, m := range turn {
-		var content []any
-		switch c := m["content"].(type) {
-		case string:
-			content = []any{map[string]any{"type": "text", "text": c}}
-		case []any:
-			content = c
-		default:
-			// Off-type content violates the contract: fail rather than degrade, and name
-			// the shape, since the cause is almost always another extension.
-			return nil, fmt.Errorf("extractUserPromptBlocks: user message content must be a string or block array, got %T — likely a malformed message from another extension", m["content"])
-		}
-		for _, raw := range content {
-			block := obj(raw)
-			switch block["type"] {
-			case "text":
-				if text := str(block["text"]); text != "" {
-					blocks = append(blocks, map[string]any{"type": "text", "text": text})
-				}
-			case "image":
-				data, mime := str(block["data"]), str(block["mimeType"])
-				if data == "" || mime == "" {
-					b.debugf("image block missing data or mimeType, skipping")
-					continue
-				}
-				b.debugf("image block: mimeType=%s, data length=%d", mime, len(data))
-				hasImage = true
-				blocks = append(blocks, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": mime, "data": data}})
-			}
-		}
-	}
-	types := make([]string, len(blocks))
-	for i, blk := range blocks {
-		types[i] = str(obj(blk)["type"])
-	}
-	b.debugf("extractUserPromptBlocks: %d msgs in turn, %d blocks, types=%s", len(turn), len(blocks), strings.Join(types, ","))
-	if !hasImage {
-		return nil, nil
-	}
-	return blocks, nil
-}
-
-// steerBlocks is the trailing user turn as content blocks, nil when there is none.
-// Blocks rather than text so image steers keep their images.
-func (b *Bridge) steerBlocks(messages []map[string]any) ([]any, error) {
-	blocks, err := b.extractUserPromptBlocks(messages)
-	if err != nil || blocks != nil {
-		return blocks, err
-	}
-	if text, _ := extractUserPrompt(messages); text != "" {
-		return []any{map[string]any{"type": "text", "text": text}}, nil
-	}
-	return nil, nil
 }

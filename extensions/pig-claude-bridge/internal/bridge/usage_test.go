@@ -10,7 +10,7 @@ var pricedModel = map[string]any{
 	"cost": map[string]any{"input": 1_000_000, "output": 2_000_000, "cacheRead": 0, "cacheWrite": 0},
 }
 
-func emptyOutput() map[string]any { return newAssistantOutput(testModel) }
+func emptyOutput() map[string]any { return newAssistantOutput(testModel, "", "stop", "") }
 
 // update decodes a usage frame the way the stream does, then applies it.
 func update(t *testing.T, output map[string]any, usage string, model map[string]any) UsageReport {
@@ -144,5 +144,21 @@ func TestMapToolArgs(t *testing.T) {
 	}
 	if got := mapToolArgs("notify_parent", nil); len(got) != 0 {
 		t.Errorf("nil args = %v", got)
+	}
+}
+
+// As the TypeScript's consumeQuery, a query prices its usage with the model it started
+// with; a later call continuing it with another model changes only the message's model.
+func TestUsageCostUsesTheModelTheQueryStartedWith(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	q, _ := newStreamContext()
+	q.model = pricedModel
+	q.resetTurnState(testModel)
+	b.processStreamEvent(q, frame(t, `{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1","usage":{"input_tokens":3,"output_tokens":0}}}}`))
+	if cost := usageOf(q.turnOutput)["cost"].(map[string]any); cost["input"] != 3.0 {
+		t.Fatalf("cost = %v, want the start model's rates", cost)
+	}
+	if q.turnOutput["model"] != testModel["id"] {
+		t.Fatalf("message model = %v", q.turnOutput["model"])
 	}
 }

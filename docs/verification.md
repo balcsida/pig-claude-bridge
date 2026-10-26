@@ -20,8 +20,11 @@ How to run (by hand, never in CI; it spends a little `claude-haiku-4-5` quota th
 
 ```
 cd extensions/pig-claude-bridge
-go test -race -tags live -run 'Contract|InitializeResult|ToolsCall|Disallowed|ToolsEmpty|Unserved|IsError|ResultModel|IncludePartial|MessageDelta|Streamed|McpMessage|JSONSchema|Resume|Arbitrary|CCWrites|RepairTool|Enable|StrictMcp|ThinkingDisplay|ClaudeMd|IncludeGit' ./internal/ccproto/ -v
+go test -race -tags live -count=1 -v ./internal/ccproto/
 ```
+
+This runs the whole package, so a new contract test needs no pattern update: the unit tests, the contract tests and
+the rebuild, attachment and parallel-result live tests that `tests/live` also runs.
 
 - Without the tag the file is not compiled; with it, each test skips itself when `claude` is not on PATH.
 - Each test runs the child in a fresh scratch directory; the only part of `~/.claude` touched is that
@@ -107,8 +110,8 @@ Environment contract (`lib.sh` and `tests/live/harness.go` agree): one work dire
 `{"defaultProvider":"claude-bridge","defaultModel":"claude-haiku-4-5"}`; `PI_CODING_AGENT_DIR` and `PIG_USE_PI_DIRS`
 unset; `-e <repo>` on every `pig` call; real `HOME` (Claude Code's login); `CLAUDE_BRIDGE_DEBUG=1` with a per-test
 `CLAUDE_BRIDGE_DEBUG_PATH`. The alternative provider comes only from `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER` /
-`CLAUDE_BRIDGE_TESTING_ALT_MODEL`; no `.env*` file is read. When they are unset the AskClaude check prints
-`SKIP (CLAUDE_BRIDGE_TESTING_ALT_PROVIDER unset)` and counts as skipped. AskClaude is enabled through the agent-dir
+`CLAUDE_BRIDGE_TESTING_ALT_MODEL`; no `.env*` file is read. When either is unset the AskClaude check prints
+`SKIP (<the unset variables> unset)` and counts as skipped. AskClaude is enabled through the agent-dir
 `claude-bridge.json` (`{"askClaude":{"enabled":true}}`): PiG's project config dir name is host-decided, so this is the
 stable equivalent of the TypeScript smoke's project `.pi/claude-bridge.json`.
 
@@ -127,6 +130,11 @@ Adaptations from the TypeScript suite:
 - The deadlock regex drops the `[id]` segment of the Go debug line: `^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[^]]+\] (BUG:|WARNING: [0-9]+ MCP handlers still waiting)`,
   with `check_deadlock_logs --selftest` (run first by `run-all.sh`).
 - `TestIntSessionNew` ports `int-session-new.mjs` with its markers unchanged and adds an orphan check after `new_session`.
+- The Go harness's default cwd is `<work>/project`, where the TypeScript harness ran in the repo root; the tests that read
+  repo files run in a temp project holding copies (`projectDir`).
+- When Claude Code's config dir is not writable, the shell probe reports the system's error text (`Permission denied`)
+  where the TypeScript reports Node's error code (`EACCES`); the Go harness maps EACCES, EPERM, EROFS and ENOENT to their
+  codes as the TypeScript prints them.
 
 Run on 2026-10-25 (one work dir, `scripts/live/work/gate`): pig `0.5.3+1.4.0.74f46864`, claude `2.1.310 (Claude Code)`,
 go `1.27.3 darwin/arm64`; Node was not run by this task (PiG runs it for its own extensions).
@@ -178,6 +186,7 @@ per test; SKIP rows are separate. The temp agent dirs of the compaction tests ca
 | `TestIntCompactSecondCompact` | PASS | 52.9 |
 | `TestIntBranchSummary` | PASS | 19.9 |
 | `TestIntCompactAutoThreshold` | PASS (one threshold compaction, tokensBefore 14953) | 57.0 |
+| `TestIntCompactMidturnRebuild`, first run | FAIL (the `session_compact:threshold` check, Finding 1; that run's output was not kept) | |
 | `TestIntCompactMidturnRebuild` | PASS (after Finding 1 fix: tokens 81303 before the compaction, 12710 after) | 64.9 |
 | `TestDeleteSessionPlusCreateSessionSessionIdPreservedAcrossFullWipe` (`internal/ccproto/live_rebuild_test.go`, case 2) | PASS | 12.8 |
 | `TestRebuildOverCCWrittenToolUseRecordsResolvesCleanly` (same file, case 3) | PASS | 18.6 |
@@ -266,6 +275,25 @@ The debug log shows PiG aborting the run (`consumeQuery: frame loop exited, abor
 reach the bridge before the runner is replaced, but this run does not separate the shutdown kill from the abort that
 precedes it; `TestSessionShutdownKillsLiveClaudeCodeChildren` (unit, fake Claude Code that ignores SIGTERM) covers the
 shutdown kill on its own.
+
+### Changes since the recorded runs
+
+Made for issue #2 after the runs above and checked offline only (`go vet -tags live`, `bash -n`, the two
+`--selftest`s and scratch inputs), not rerun against Claude Code:
+- `run-all.sh` gives the `go test` run its own row, so a build failure in `tests/live` shows as `FAIL`.
+- `verify.sh` requires `claude`, opens the idle fifo read-write (a pig that dies before reading it cannot block the
+  script) and fails when pig has not exited 30 s after its stdin closes.
+- The deadlock selftest covers the `BUG:` alternative and a near-miss; the AskClaude, image and session-resume skips
+  name exactly the unset variables.
+- `int-cross-resume.sh`: only the first record carrying `parentUuid` may be a root and every later one must name an
+  earlier record (the recorded runs accepted a null `parentUuid` anywhere); records without the key stay outside the
+  chain. The cleanup deletes only the run's own session file and companion directory, not the shared project's sessions.
+- `TestIntToolMessage`: a subtest body never touches a `testing.T`; its failure comes back over a channel, so a body
+  that outlives its bound cannot report into a finished test.
+- `runExtensionLiveTests` takes the test names and needs a `PASS` line for each.
+- The compaction ports share `prompter` and `checker`; second-compact, auto-threshold and the subagent test print the
+  debug-log tail on failure (3000, 4000 and 6000 characters), as their originals do. The subagent test's temp agent dir
+  is empty, as in the original.
 
 ## Footprint *(Task 25)*
 

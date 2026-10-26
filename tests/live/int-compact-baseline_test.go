@@ -20,14 +20,7 @@ func TestIntCompactBaseline(t *testing.T) {
 		DefaultTimeout: timeout,
 	})
 	h.StartAndWait(0)
-	prompt := func(msg string) string {
-		t.Helper()
-		text, err := h.PromptAndWait(msg, timeout)
-		if err != nil {
-			failWithLogs(t, h, "%v", err)
-		}
-		return text
-	}
+	prompt := prompter(t, h, timeout)
 
 	t.Log("Seed: a few short turns so there is history to compact...")
 	prompt("Pick a number between 1 and 100 and remember it. Reply with just the number. Do not use the memory system.")

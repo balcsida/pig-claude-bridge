@@ -44,6 +44,9 @@ func TestRenderResult(t *testing.T) {
 	t.Run("partial shows the status", func(t *testing.T) {
 		equal(t, renderResult(sdk.ToolRenderResult{Content: text("3s — Read(a.go)")}, sdk.ToolRenderResultOptions{IsPartial: true}), []string{"◉ Claude Code 3s — Read(a.go)"})
 		equal(t, renderResult(sdk.ToolRenderResult{}, sdk.ToolRenderResultOptions{IsPartial: true}), []string{"◉ Claude Code working..."})
+		// The clearing update: PiG turns its "" content into one empty text block, which
+		// renders an empty status, as the TypeScript's explicit empty block does.
+		equal(t, renderResult(sdk.ToolRenderResult{Content: text("")}, sdk.ToolRenderResultOptions{IsPartial: true}), []string{"◉ Claude Code "})
 	})
 	t.Run("collapsed result has time, actions and a preview", func(t *testing.T) {
 		r := sdk.ToolRenderResult{Content: text("answer"), Details: map[string]any{"executionTime": float64(2500), "actions": "Read(a.go)", "prompt": "q"}}

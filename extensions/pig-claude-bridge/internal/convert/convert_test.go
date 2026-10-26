@@ -315,6 +315,31 @@ func TestConvertPiMessages(t *testing.T) {
 		}
 	})
 
+	t.Run("names a thinking block's provider as the TypeScript's ?? does", func(t *testing.T) {
+		_, _, dropped, err := ConvertPiMessages(decodeMessages(t, `[
+			{"role":"assistant","provider":"","content":[{"type":"thinking","thinking":"x"}]},
+			{"role":"assistant","content":[{"type":"thinking","thinking":"x"}]}]`), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(dropped.Providers, []string{"", "unknown"}) {
+			t.Fatalf("providers = %q", dropped.Providers)
+		}
+	})
+
+	t.Run("reads assistant content in either slice type", func(t *testing.T) {
+		msgs, _, dropped, err := ConvertPiMessages([]map[string]any{
+			{"role": "assistant", "content": []map[string]any{{"type": "text", "text": "hi"}}},
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []ccsession.Message{{Role: "assistant", Content: []ccsession.Block{ccsession.TextBlock{Type: "text", Text: "hi"}}}}
+		if !reflect.DeepEqual(msgs, want) || dropped.AbortedTurns != 0 {
+			t.Fatalf("got %#v, dropped %+v", msgs, dropped)
+		}
+	})
+
 	t.Run("collects parallel results into one user message after their assistant message", func(t *testing.T) {
 		msgs, ids, _, err := ConvertPiMessages(decodeMessages(t, `[
 			{"role":"assistant","provider":"claude-bridge","content":[{"type":"toolCall","id":"a:1","name":"read","arguments":{}},{"type":"toolCall","id":"b:2","name":"read","arguments":{}}]},

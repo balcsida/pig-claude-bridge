@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 var noSkills = false
@@ -120,25 +119,41 @@ func TestPromptAndWaitFailsWhenTheProcessCannotStart(t *testing.T) {
 	}
 }
 
+// As the TypeScript's promptAndWait: an abort once the process runs ends the call with
+// the answer so far (stopReason cancelled), not an error; one before it starts is the error.
 func TestPromptAndWaitAborts(t *testing.T) {
-	h := newProviderHarness(t, nil)
-	h.script(func(s *spawn) {}) // never answers
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := h.b.PromptAndWait(ctx, h.host, AskRequest{Prompt: "q", AppendSkills: &noSkills})
-		done <- err
-	}()
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	select {
-	case err := <-done:
-		if err == nil || err.Error() != "Aborted" {
+	t.Run("mid-run, with the answer so far", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		h.script(func(s *spawn) { // answers, then stays up as a process with input open does
+			s.client.emit(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "partial"})
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		type answer struct {
+			text string
+			err  error
+		}
+		done := make(chan answer, 1)
+		go func() {
+			text, err := h.b.PromptAndWait(ctx, h.host, AskRequest{Prompt: "q", AppendSkills: &noSkills})
+			done <- answer{text, err}
+		}()
+		waitFor(t, "the result to be read", func() bool {
+			s := h.spawns()
+			return len(s) == 1 && s[0].client.sent.Load() == 1
+		})
+		cancel()
+		if got := receive(t, done, "PromptAndWait to return after the abort"); got.text != "partial" || got.err != nil {
+			t.Fatalf("got %q, %v", got.text, got.err)
+		}
+	})
+	t.Run("before the call starts", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := h.b.PromptAndWait(ctx, h.host, AskRequest{Prompt: "q", AppendSkills: &noSkills}); err == nil || err.Error() != "Aborted" {
 			t.Fatalf("err = %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("PromptAndWait did not return after the abort")
-	}
+	})
 }
 
 func TestPromptAndWaitSkipsSkillsWhenReadIsBlocked(t *testing.T) {
@@ -166,7 +181,8 @@ func TestPromptAndWaitHonoursAnAbortWhileClaudeCodeStarts(t *testing.T) {
 	}()
 	fake.awaitLaunch(t)
 	cancel()
-	if err := receive(t, done, "PromptAndWait to return after the abort"); err == nil || err.Error() != "Aborted" {
+	// The query exists once the process is launched, so this is a cancelled call with no answer yet.
+	if err := receive(t, done, "PromptAndWait to return after the abort"); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 }

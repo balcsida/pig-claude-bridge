@@ -23,22 +23,26 @@ script_rows() { # name status seconds output-file
   done < <(grep -E ' SKIP \(' "$4")
 }
 
-# One row per "--- PASS: TestX (22.00s)" line of go test -v output.
-go_rows() { # output-file
+# One row for the go test run, the only one a build failure shows in, then one per "--- PASS: TestX (22.00s)"
+# line of go test -v output.
+go_rows() { # status seconds output-file
   local verdict name secs
+  row "go test" "$1" "$2"
   while read -r verdict name secs; do
     row "go: $name" "${verdict%:}" "${secs//[()s]/}"
-  done < <(grep -E '^--- (PASS|FAIL|SKIP): ' "$1" | sed -E 's/^--- //')
+  done < <(grep -E '^--- (PASS|FAIL|SKIP): ' "$3" | sed -E 's/^--- //')
 }
 
 if [ "${1:-}" = "--selftest" ]; then
   tmp=$(mktemp -d)
   printf 'a: check   PASS\nb: skipped check                 SKIP (X unset)\n' > "$tmp/skip.txt"
   printf -- '--- PASS: TestX (22.00s)\n' > "$tmp/go.txt"
+  printf '# example.com/live\n./a_test.go:1:1: expected package\nFAIL\texample.com/live [build failed]\nFAIL\n' > "$tmp/build.txt"
   : > "$tmp/empty.txt"
   script_rows ok PASS 5 "$tmp/empty.txt"; script_rows smoke PASS 7 "$tmp/skip.txt"; script_rows bad FAIL 3 "$tmp/empty.txt"
-  go_rows "$tmp/go.txt"
-  want=$(printf '%-34s | %-16s | %s\n' ok PASS 5 smoke PASS 7 "smoke: b: skipped check" SKIP 0 bad FAIL 3 "go: TestX" PASS 22.00)
+  go_rows PASS 30 "$tmp/go.txt"; go_rows FAIL 2 "$tmp/build.txt"
+  want=$(printf '%-34s | %-16s | %s\n' ok PASS 5 smoke PASS 7 "smoke: b: skipped check" SKIP 0 bad FAIL 3 \
+    "go test" PASS 30 "go: TestX" PASS 22.00 "go test" FAIL 2)
   got=${ROWS%$'\n'}
   rm -rf "$tmp"
   [ "$got" = "$want" ] && [ "$FAILED" = 1 ] || { echo "run-all.sh --selftest: FAIL" >&2; printf 'got:\n%s\nwant:\n%s\n' "$got" "$want" >&2; exit 1; }
@@ -61,9 +65,10 @@ run_script() { # script
 run_script "$LIVE_DIR/verify.sh"
 for script in "$LIVE_DIR"/int-*.sh; do run_script "$script"; done
 
+start=$SECONDS
 (cd "$ROOT/tests/live" && go test -race -tags live -count=1 -v ./...) 2>&1 | env -u CLAUDE_BRIDGE_TEST_WORK_DIR tee "$LOGDIR/go-test.run.txt"
-[ "${PIPESTATUS[0]}" -eq 0 ] || FAILED=1
-go_rows "$LOGDIR/go-test.run.txt"
+if [ "${PIPESTATUS[0]}" -eq 0 ]; then status=PASS; else status=FAIL; fi
+go_rows "$status" "$((SECONDS - start))" "$LOGDIR/go-test.run.txt"
 
 start=$SECONDS
 if check_deadlock_logs "$LOGDIR"; then row "deadlock check" PASS "$((SECONDS - start))"; else row "deadlock check" FAIL "$((SECONDS - start))"; fi

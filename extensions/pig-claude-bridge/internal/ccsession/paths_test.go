@@ -98,10 +98,19 @@ func TestClaudeDirPrecedence(t *testing.T) {
 	if got := ClaudeDir(""); got != "/env/claude" {
 		t.Fatalf("got %q", got)
 	}
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "") // empty counts as unset
 	home, _ := os.UserHomeDir()
 	if got := ClaudeDir(""); got != filepath.Join(home, ".claude") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestClaudeDirWithoutHomeUsesThePasswdEntry(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("HOME", "")
+	got := ClaudeDir("")
+	if !filepath.IsAbs(got) || filepath.Base(got) != ".claude" {
+		t.Fatalf("got %q, want an absolute <home>/.claude", got)
 	}
 }
 

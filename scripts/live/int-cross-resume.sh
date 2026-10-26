@@ -16,12 +16,17 @@ setup_test_env "cross-resume" none
 
 TIMEOUT=240
 FAIL=0
-trap 'kill_descendants; exit_check; [ -z "${CC_PROJECT_DIR:-}" ] || rm -rf "$CC_PROJECT_DIR"' EXIT
+# Only this run's session: the project dir holds every other script's sessions too.
+trap 'kill_descendants; [ -z "${SESSION_FILE:-}" ] || rm -rf "$SESSION_FILE" "${SESSION_FILE%.jsonl}"; exit_check' EXIT
 
 check() { # check <description> <command...>
   local desc="$1"; shift
   if "$@" >/dev/null; then echo "PASS: $desc"; else echo "FAIL: $desc"; FAIL=$((FAIL + 1)); fi
 }
+
+# The chain records (those carrying parentUuid): only the first is a root, and every later one names an earlier one.
+CHAIN_JQ='[.[] | select(has("parentUuid"))] as $c | ($c | length) > 0 and $c[0].parentUuid == null
+  and all(range(1; $c | length); . as $i | $c[$i].parentUuid != null and ($c[:$i] | map(.uuid) | index($c[$i].parentUuid)) != null)'
 
 # Claude Code's directory for this project: every non-alphanumeric character of the resolved path becomes "-".
 CC_PROJECT_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
@@ -59,10 +64,10 @@ if [ -n "$SESSION_FILE" ]; then
   echo "Records: $RECORDS, first type: $(head -1 "$SESSION_FILE" | jq -r .type)"
   check "the first record is a user record" test "$(head -1 "$SESSION_FILE" | jq -r .type)" = "user"
   check "the session holds at least the 310 recorded messages plus the new turn (>= 311 records)" test "$RECORDS" -ge 311
-  # Claude Code appends records of its own (queue-operation, attachments) after the rebuilt ones, so the check is
-  # that the first record is a root and every other parentUuid names an earlier record.
-  check "the records chain in order (first record is a root, every parentUuid names an earlier record)" \
-    jq -es '. as $a | $a[0].parentUuid == null and all(range(1; length); . as $i | $a[$i].parentUuid == null or ($a[:$i] | map(.uuid) | index($a[$i].parentUuid)) != null)' "$SESSION_FILE"
+  # Claude Code appends records of its own after the rebuilt ones; those without a parentUuid key
+  # (queue-operation) are outside the chain.
+  check "the records chain in order (only the first is a root, every later parentUuid names an earlier record)" \
+    jq -es "$CHAIN_JQ" "$SESSION_FILE"
 fi
 
 echo ""

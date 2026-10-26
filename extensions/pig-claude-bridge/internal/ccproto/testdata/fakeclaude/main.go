@@ -4,7 +4,7 @@
 // user frame arrives, {"__sleep_ms":N} sleeps, a non-JSON line is emitted verbatim), FAKECLAUDE_MCP_CALL (JSON-RPC
 // message sent as an mcp_message request with id "mcp1"), FAKECLAUDE_MCP_BEFORE_INIT=1 (send an mcp_message
 // "initialize" request with id "m0" and wait for its reply before answering initialize), FAKECLAUDE_ECHO=1
-// (echo every control_response received back on stdout), FAKECLAUDE_IGNORE_TERM=1 (record and ignore SIGTERM and
+// (echo every control_response received back on stdout and mark "echoed"), FAKECLAUDE_IGNORE_TERM=1 (record and ignore SIGTERM and
 // keep running after stdin closes), FAKECLAUDE_HOLD=1 (keep running after stdin closes), FAKECLAUDE_STDERR
 // (text written to stderr at startup), FAKECLAUDE_EXIT_CODE (exit code once stdin closes),
 // FAKECLAUDE_EXIT_BEFORE_INIT=1 (exit with that code right after the stderr text, before reading stdin),
@@ -64,14 +64,14 @@ func main() {
 			os.WriteFile(filepath.Join(dir, name), nil, 0o644)
 		}
 	}
+	if os.Getenv("FAKECLAUDE_GRANDCHILD") == "child" {
+		time.Sleep(3 * time.Second) // before any recording: the parent's argv.json and env.json stay its own
+		return
+	}
 	save("argv.json", os.Args[1:])
 	save("env.json", os.Environ())
 	if s := os.Getenv("FAKECLAUDE_STDERR"); s != "" {
 		fmt.Fprint(os.Stderr, s)
-	}
-	if os.Getenv("FAKECLAUDE_GRANDCHILD") == "child" {
-		time.Sleep(3 * time.Second)
-		return
 	}
 	if os.Getenv("FAKECLAUDE_GRANDCHILD") == "1" {
 		gc := exec.Command(os.Args[0])
@@ -143,6 +143,7 @@ func main() {
 			case "control_response":
 				if echo {
 					emit(line)
+					mark("echoed")
 				}
 				responses <- f.Response.RequestID
 			case "user":

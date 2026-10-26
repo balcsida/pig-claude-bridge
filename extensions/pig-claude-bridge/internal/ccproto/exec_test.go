@@ -1,6 +1,8 @@
 package ccproto
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,7 +36,7 @@ func TestVersion(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("#!/bin/sh\necho '2.1.310 (Claude Code)'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Version(exe)
+	got, err := Version(context.Background(), exe)
 	if err != nil || got != "2.1.310" {
 		t.Fatalf("got %q, %v", got, err)
 	}
@@ -45,7 +47,7 @@ func TestVersionUnparsable(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("#!/bin/sh\necho hello\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Version(exe); err == nil {
+	if _, err := Version(context.Background(), exe); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -59,12 +61,28 @@ func TestVersionStalledReturnsWithinTheTimeout(t *testing.T) {
 	VersionTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { VersionTimeout = old })
 	start := time.Now()
-	_, err := Version(exe)
+	_, err := Version(context.Background(), exe)
 	if err == nil || !strings.Contains(err.Error(), "no answer within") {
 		t.Fatalf("err = %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("Version took %s", elapsed)
+	}
+}
+
+func TestVersionStopsWhenItsContextEnds(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start := time.Now()
+	if _, err := Version(ctx, exe); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Version took %s after its context ended", elapsed)
 	}
 }
 

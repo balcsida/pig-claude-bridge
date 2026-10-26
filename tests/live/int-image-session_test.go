@@ -14,10 +14,7 @@ import (
 // the whole image path is exercised together: pi context -> conversion -> session writer -> CC's own resume.
 // Needs the alternative provider from the environment only.
 func TestIntImageSession(t *testing.T) {
-	altProvider, altModel := os.Getenv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER"), os.Getenv("CLAUDE_BRIDGE_TESTING_ALT_MODEL")
-	if altProvider == "" || altModel == "" {
-		t.Skip("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER / CLAUDE_BRIDGE_TESTING_ALT_MODEL unset")
-	}
+	altProvider, altModel := altProviderModel(t)
 	// 32x32 solid crimson PNG — a colour the model can name unambiguously.
 	const crimsonPNG = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nGO4I2JDU8QwasGoBaMWjFow" +
 		"asGoBaMWjFowasGoBaMWDBULADahsD1ndvqVAAAAAElFTkSuQmCC"

@@ -42,6 +42,7 @@ func (b *Bridge) cliDebugOptions(tag string) (debugFile string, onStderr func(ch
 	debugFile = filepath.Join(dir, ts+"-"+tag+"-"+strconv.FormatInt(seq, 10)+".log")
 	b.debugf("cli-debug: %s #%d → %s", tag, seq, debugFile)
 	return debugFile, func(chunk string) {
+		defer b.recoverHandler("cli-stderr")
 		for _, line := range strings.Split(strings.ReplaceAll(chunk, "\r\n", "\n"), "\n") {
 			if line != "" {
 				b.debugf("[cli-stderr %s#%d] %s", tag, seq, line)

@@ -32,13 +32,14 @@ Paths are relative to `extensions/pig-claude-bridge/`. TypeScript paths are `src
 | `internal/bridge/host.go` | new (Go-only) | `Host` interface and `Deps`, so the PiG SDK stays confined to `extension.go` and the bridge is testable with a fake host |
 | `internal/bridge/isolated.go` | `index.ts` 495-600 (`extractIsolatedSummaryPrompt`, `isolatedStreamFn`, `runIsolatedSummary`) | |
 | `internal/bridge/notices.go` | `index.ts` 914-1018 (`showStartupNoticeOnce`, `reportLeaks`), 1138-1146 (`effortForReasoning`) | |
-| `internal/bridge/provider.go` | `index.ts` 1788-2262 (`streamClaudeAgentSdk`), 414-480 (`turnStart`, prompt extraction) | |
+| `internal/bridge/prompt.go` | `index.ts` 421-478 (`extractUserPrompt`, `extractUserPromptBlocks`), 1632-1637 (`steerBlocks`) | |
+| `internal/bridge/provider.go` | `index.ts` 1788-2262 (`streamClaudeAgentSdk`) | |
 | `internal/bridge/query.go` | `query-state.ts`, `prompt-stream.ts`, `index.ts` 480-494 (`newAssistantOutput`) | |
 | `internal/bridge/ratelimit.go` | `rate-limit.ts`, `index.ts` 510-550 | headers go to the debug log only (D1) |
 | `internal/bridge/sessioncwd.go` | `session-cwd.ts` | most-recent-pending summary slot (D7) |
 | `internal/bridge/state.go` | `index.ts` 187-340 (`SessionState`, `sessionKey`, `markRebuildForSession`, `armStaleContexts`) | `sponsorMarkRebuildForSession` not ported (D4) |
 | `internal/bridge/stream.go` | `index.ts` 1101-1216, 1215-1485 (`processStreamEvent`, `processAssistantMessage`, finalisation) | |
-| `internal/bridge/sync.go` | `index.ts` 341-414, 600-720 (`syncSharedSession`, `convertAndImportMessages`, `verifyWrittenSession`, `safeRealpath`), 219-237 (`readCarriedAttachments`) | |
+| `internal/bridge/sync.go` | `index.ts` 341-420, 600-720 (`syncSharedSession`, `turnStart`, `convertAndImportMessages`, `verifyWrittenSession`, `safeRealpath`), 219-237 (`readCarriedAttachments`) | |
 | `internal/bridge/toolargs.go` | `index.ts` 914-1018 (`piToolNameFor`, `mapToolArgs`) | |
 | `internal/bridge/usage.go` | `usage.ts`, `index.ts` `recordUsage` | |
 | `internal/ccproto/args.go` | `index.ts` 53-57 (`CC_CHILD_ENV`), 2030-2096 (query options); the SDK's argv builder (`sdk.mjs`) | argv pinned by `testdata/sdk-argv-snapshot.json` |

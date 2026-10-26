@@ -147,15 +147,12 @@ func canonicalSystemPrompt(messages []map[string]any, toolCount int) (string, bo
 	}
 	sort.SliceStable(names, func(i, j int) bool { return rank(names[i]) < rank(names[j]) })
 	var parts []string
-	for _, p := range append([]string{strings.Join(content, "\n\n")}, func() []string {
-		out := make([]string, len(names))
-		for i, n := range names {
-			out[i] = sections.values[n]
-		}
-		return out
-	}()...) {
-		if p != "" {
-			parts = append(parts, p)
+	if text := strings.Join(content, "\n\n"); text != "" {
+		parts = append(parts, text)
+	}
+	for _, n := range names {
+		if s := sections.values[n]; s != "" {
+			parts = append(parts, s)
 		}
 	}
 	if len(parts) == 0 {
@@ -166,8 +163,10 @@ func canonicalSystemPrompt(messages []map[string]any, toolCount int) (string, bo
 
 // ToBridgeContext restores the systemPrompt and tools fields downstream
 // consumers expect from PiG's transcript-shaped context, where the tool set
-// rides in the system messages, and removes those messages from the history.
-// A context without system messages is returned as is.
+// rides in the system messages, and removes those messages from the history,
+// which then comes back as []map[string]any. A context without system messages
+// is returned as is (the TypeScript's no-op), so its messages keep the slice type
+// they arrived in; readers accept both.
 func ToBridgeContext(context map[string]any) map[string]any {
 	messages := messageList(context["messages"])
 	hasSystem := false

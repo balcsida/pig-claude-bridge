@@ -16,6 +16,8 @@ import (
 type PendingToolCall struct {
 	ToolName string
 	Resolve  func(convert.McpResult)
+	// reply identifies the handler call that registered the entry.
+	reply chan convert.McpResult
 }
 
 // rateLimitRejection is the last rejection seen on a query: Claude Code sends it
@@ -39,15 +41,14 @@ type QueryContext struct {
 	// Query-scoped.
 	activeQuery     ccproto.Client
 	currentPiStream *sdk.ModelEventStream
-	// model is the model of the turn in progress, set by resetTurnState; usage cost
-	// comes from its rates.
+	// model is the model the query started with (the TypeScript's consumeQuery
+	// model): usage cost and the served-window log use it, though a later call
+	// continuing the query can carry another one.
 	model map[string]any
 	// customToolNameToPi maps the SDK's tool names to pi's for this query.
 	customToolNameToPi map[string]string
 	// completedStreams are the streams that got their terminal event (markStreamComplete).
 	completedStreams map[*sdk.ModelEventStream]struct{}
-	// currentOnResponse is the onResponse of the provider call that owns currentPiStream.
-	currentOnResponse func(map[string]any, map[string]any) error
 	// heldRateLimit is the latest rate_limit_event not yet reported; CC sends it
 	// after message_stop, so it waits for the next call's stream.
 	heldRateLimit    *RateLimitInfo
@@ -78,6 +79,9 @@ type QueryContext struct {
 	// missedSteer: a steer never reached CC; completion must carry this into the
 	// mirror it creates.
 	missedSteer bool
+	// abandoned: discardRewrittenQuery killed this query; its end must not touch the
+	// session or the stream its replacement owns.
+	abandoned bool
 
 	// Per-turn (reset together by resetTurnState).
 	turnOutput          map[string]any
@@ -102,28 +106,10 @@ func newQueryContext() *QueryContext {
 func (c *QueryContext) turnBlocks() ([]any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.turnBlocksLocked()
-}
-
-func (c *QueryContext) turnBlocksLocked() ([]any, error) {
 	if c.turnOutput == nil {
 		return nil, errors.New("turnBlocks accessed before resetTurnState")
 	}
-	blocks, _ := c.turnOutput["content"].([]any)
-	return blocks, nil
-}
-
-// appendTurnBlock adds a block to turnOutput.content (Go slices cannot be mutated
-// through a returned header, so appending goes through the context).
-func (c *QueryContext) appendTurnBlock(block any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	blocks, err := c.turnBlocksLocked()
-	if err != nil {
-		return err
-	}
-	c.turnOutput["content"] = append(blocks, block)
-	return nil
+	return c.blocksLocked(), nil
 }
 
 // releasePendingToolCalls answers every parked MCP handler with reason and drops
@@ -145,8 +131,7 @@ func (c *QueryContext) releasePendingToolCalls(reason string) {
 func (c *QueryContext) resetTurnState(model map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.model = model
-	c.turnOutput = newAssistantOutput(model)
+	c.turnOutput = newAssistantOutput(model, "", "stop", "")
 	c.turnStarted = false
 	c.turnSawStreamEvent = false
 	c.turnSawToolCall = false
@@ -155,11 +140,17 @@ func (c *QueryContext) resetTurnState(model map[string]any) {
 	c.turnStreamBlockStart = 0
 }
 
-// newAssistantOutput is the zeroed assistant message for model (index.ts newAssistantOutput).
-func newAssistantOutput(model map[string]any) map[string]any {
-	return map[string]any{
+// newAssistantOutput is an assistant message for model with zeroed usage (index.ts
+// newAssistantOutput): a non-empty text becomes its one text block, a non-empty
+// errorMessage is set.
+func newAssistantOutput(model map[string]any, text, stopReason, errorMessage string) map[string]any {
+	content := []any{}
+	if text != "" {
+		content = []any{map[string]any{"type": "text", "text": text}}
+	}
+	out := map[string]any{
 		"role":     "assistant",
-		"content":  []any{},
+		"content":  content,
 		"api":      model["api"],
 		"provider": model["provider"],
 		"model":    model["id"],
@@ -167,9 +158,13 @@ func newAssistantOutput(model map[string]any) map[string]any {
 			"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
 			"cost": map[string]any{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
 		},
-		"stopReason": "stop",
+		"stopReason": stopReason,
 		"timestamp":  time.Now().UnixMilli(),
 	}
+	if errorMessage != "" {
+		out["errorMessage"] = errorMessage
+	}
+	return out
 }
 
 var errPromptStreamClosed = errors.New("prompt stream closed")
@@ -242,7 +237,10 @@ func (p *PromptStream) Push(ctx context.Context, msg ccproto.UserMessage) error 
 
 // Next hands the writer the next message, first acking the previous one. It
 // returns false once the stream is ended and drained, failed, or ctx is
-// cancelled (abandonment: pending acks are rejected as closed).
+// cancelled (abandonment: pending acks are rejected as closed). The writer calls
+// Next until it returns false: only that next call acks the message it holds, so a
+// writer that stops early leaves that Push waiting until Fail (the query's
+// teardown) or the pusher's ctx.
 func (p *PromptStream) Next(ctx context.Context) (ccproto.UserMessage, bool) {
 	p.mu.Lock()
 	if p.inflight != nil {

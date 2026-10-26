@@ -627,9 +627,9 @@ func TestFinalizeCurrentStream(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
 		q, _ := newStreamContext()
 		next, _ := newStreamContext()
-		b.claimCurrentPiStream(next.currentPiStream, "first", q, nil)
+		b.claimCurrentPiStream(next.currentPiStream, "first", q)
 		b.finalizeCurrentStream(q, "")
-		b.claimCurrentPiStream(next.currentPiStream, "second", q, nil)
+		b.claimCurrentPiStream(next.currentPiStream, "second", q)
 		log := readDebugLog(t, agentDir)
 		if !strings.Contains(log, "overwritten before terminal event (first)") || strings.Contains(log, "(second)") {
 			t.Errorf("log = %q", log)

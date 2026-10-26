@@ -40,18 +40,14 @@ const (
 // loop.
 func errorStream(model map[string]any, message string) *sdk.ModelEventStream {
 	stream := sdk.CreateAssistantMessageEventStream()
-	out := newAssistantOutput(model)
-	out["stopReason"], out["errorMessage"] = "error", message
-	stream.Push(map[string]any{"type": "error", "reason": "error", "error": out})
+	stream.Push(map[string]any{"type": "error", "reason": "error", "error": newAssistantOutput(model, "", "error", message)})
 	return stream
 }
 
 // abortedStream is a stream that ends its turn as aborted.
 func abortedStream(model map[string]any) *sdk.ModelEventStream {
 	stream := sdk.CreateAssistantMessageEventStream()
-	out := newAssistantOutput(model)
-	out["stopReason"], out["errorMessage"] = "aborted", "Operation aborted"
-	stream.Push(map[string]any{"type": "error", "reason": "aborted", "error": out})
+	stream.Push(map[string]any{"type": "error", "reason": "aborted", "error": newAssistantOutput(model, "", "aborted", "Operation aborted")})
 	return stream
 }
 
@@ -106,13 +102,12 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 	// session sync.
 	if str(options["cacheRetention"]) == "none" {
 		b.debugf("provider: one-off summarizer call (cacheRetention none) routed to isolated summary, msgs=%d", len(messages))
-		isolated, _ := b.IsolatedStream(ctx, host, model, piContext, options, "compact-summary", nil, nil)
+		isolated, _ := b.IsolatedStream(ctx, host, model, piContext, options, "compact-summary", nil, nil) // never errs: a failure is the stream's error event
 		return isolated
 	}
 
 	stream := sdk.CreateAssistantMessageEventStream()
 	piSessionID := str(options["sessionId"])
-	onResponse, _ := options["onResponse"].(func(map[string]any, map[string]any) error)
 
 	lastMsgRole, lastMsg := "", map[string]any(nil)
 	if len(messages) > 0 {
@@ -160,7 +155,7 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 				return errorStream(model, err.Error())
 			}
 		}
-		b.claimCurrentPiStream(stream, "tool-result", resultCtx, onResponse)
+		b.claimCurrentPiStream(stream, "tool-result", resultCtx)
 		resultCtx.resetTurnState(model)
 		resultCtx.mu.Lock()
 		bind := resultCtx.bindRunSignal
@@ -212,12 +207,12 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 		return stream
 	}
 
-	return b.freshQuery(ctx, host, stream, model, piContext, messages, options, piSessionID, onResponse, unparkedToolResult, rewrittenUnderQuery)
+	return b.freshQuery(ctx, host, stream, model, piContext, messages, options, piSessionID, unparkedToolResult, rewrittenUnderQuery)
 }
 
 // freshQuery starts a Claude Code process for this call and streams its turn.
 func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEventStream, model, piContext map[string]any, messages []map[string]any,
-	options map[string]any, piSessionID string, onResponse func(map[string]any, map[string]any) error, unparkedToolResult, rewrittenUnderQuery bool) *sdk.ModelEventStream {
+	options map[string]any, piSessionID string, unparkedToolResult, rewrittenUnderQuery bool) *sdk.ModelEventStream {
 	// Resolved first: an unaccountable system prompt fails this query before anything
 	// is claimed or reset, leaving no half-built query behind.
 	mcpTools, customToolNameToSdk, customToolNameToPi := resolveMcpTools(piContext, b.askClaudeToolName())
@@ -238,17 +233,27 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	if err == nil && capture != nil {
 		systemPromptAppend, err = promptcapture.ProjectPromptCapture(capture, readTool, config.DebugLogPath(b.deps.AgentDir))
 	}
+	lastMsgRole := ""
+	if len(messages) > 0 {
+		lastMsgRole = str(messages[len(messages)-1]["role"])
+	}
 	if err != nil {
 		// The resolution and the sendability guard stop a turn that would lose its
 		// instructions or leak pi's harness text.
+		results, _ := convert.ExtractAllToolResults(messages)
 		b.diagDump("prompt_capture_unresolved", map[string]any{
-			"promptChars": len([]rune(systemPrompt)), "knownKeys": b.captures.Size(), "error": err.Error(),
+			"promptChars": len([]rune(systemPrompt)), "knownKeys": b.captures.Size(),
+			"reentrantUserQuery": b.hasActiveQuery() && lastMsgRole == "user" && len(results) == 0,
+			"error":              err.Error(),
 		})
 		return errorStream(model, err.Error())
 	}
 
-	exe, err := b.resolveExecutable(host)
+	exe, err := b.resolveExecutable(ctx, host)
 	if err != nil {
+		if ctx.Err() != nil {
+			return abortedStream(model)
+		}
 		return errorStream(model, err.Error())
 	}
 
@@ -283,21 +288,30 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		promptText = continueAfterResumePrompt
 		b.debugf("provider: resuming the turn at a tool result with no parked query, %d msgs", len(messages))
 	}
+	q := newQueryContext()
 	// Guard: an empty prompt means the last context message isn't a user message.
 	if !hasPrompt() {
 		roles := make([]string, len(messages))
 		for i, m := range messages {
 			roles[i] = fmt.Sprintf("[%d]%v", i, m["role"])
 		}
+		var shared any
+		st := b.sessionStateFor(piSessionID)
+		if st == nil {
+			st = b.sessionStateFor("")
+		}
+		if st != nil {
+			shared = map[string]any{"sessionId": short(st.SessionID), "cursor": st.Cursor}
+		}
 		b.diagDump("empty_prompt", map[string]any{
-			"contextLength": len(messages), "activeQueryContexts": len(b.liveContexts()),
-			"messageRoles": strings.Join(roles, " "),
+			"contextLength": len(messages), "lastMsgRole": lastMsgRole, "isReentrant": b.hasActiveQuery(),
+			"activeQueryContexts": len(b.liveContexts()), "activeQueryExists": q.activeQuery != nil,
+			"sharedSession": shared, "messageRoles": strings.Join(roles, " "),
 		})
 		// Recover with a continuation prompt so Claude Code is not sent an empty text block.
 		promptText = "[continue]"
 	}
 
-	q := newQueryContext()
 	q.piSessionID = piSessionID
 	q.customToolNameToPi = customToolNameToPi
 	mcpServer, err := b.buildMcpServer(mcpTools, q)
@@ -367,9 +381,10 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		return errorStream(model, fmt.Sprintf("start Claude Code: %v", err))
 	}
 
-	b.claimCurrentPiStream(stream, "fresh-query", q, onResponse)
+	b.claimCurrentPiStream(stream, "fresh-query", q)
 	q.resetTurnState(model)
 	q.mu.Lock()
+	q.model = model
 	q.promptStream = promptStream
 	q.activeQuery = client
 	q.mu.Unlock()
@@ -445,6 +460,7 @@ func (b *Bridge) completeQuery(q *QueryContext, client ccproto.Client, syncResul
 		q.mu.Lock()
 		latest, missedSteer := q.latestCursor, q.missedSteer
 		q.mu.Unlock()
+		done := ""
 		b.updateSession(q.piSessionID, func(s *SessionState) bool {
 			id := captured
 			if id == "" {
@@ -454,13 +470,16 @@ func (b *Bridge) completeQuery(q *QueryContext, client ccproto.Client, syncResul
 				return false
 			}
 			cursor := max(contextLength, latest, s.Cursor)
-			b.debugf("provider: query done, session=%s, cursor=%d", short(id), cursor)
+			done = fmt.Sprintf("provider: query done, session=%s, cursor=%d", short(id), cursor)
 			// A missed steer may precede the first mirror or arrive while this query is
 			// still able to complete: preserve both rebuild signals.
 			s.SessionID, s.Cursor, s.Cwd, s.PiSessionID = id, cursor, cwd, q.piSessionID
 			s.NeedsRebuild = missedSteer || s.NeedsRebuild
 			return true
 		})
+		if done != "" {
+			b.debugf("%s", done) // after updateSession: its fn runs under b.mu, where file I/O does not belong
+		}
 	}
 	q.mu.Lock()
 	if q.activeQuery == client {
@@ -480,7 +499,8 @@ func orNone(s string) string {
 }
 
 // updateSession applies fn to a copy of the mirror (zero when it has none) and
-// stores the result when fn reports true. fn must not call back into the Bridge.
+// stores the result when fn reports true. fn runs under b.mu: it must not call back
+// into the Bridge or do I/O.
 func (b *Bridge) updateSession(piSessionID string, fn func(*SessionState) bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -559,8 +579,9 @@ func (b *Bridge) clearRewriteMark(piSessionID string) {
 
 // resolveExecutable finds the Claude Code binary once per process and, on that
 // first resolution, warns about a binary older than the supported minimum. A missing
-// binary fails the query, with a notice each time it is tried.
-func (b *Bridge) resolveExecutable(host Host) (string, error) {
+// binary fails the query, with a notice each time it is tried. ctx ending stops the
+// version probe; nothing is cached then, so the next call probes again.
+func (b *Bridge) resolveExecutable(ctx context.Context, host Host) (string, error) {
 	// Single flight: concurrent first calls share one version probe.
 	b.resolveMu.Lock()
 	defer b.resolveMu.Unlock()
@@ -577,10 +598,12 @@ func (b *Bridge) resolveExecutable(host Host) (string, error) {
 	exe, err := ccproto.ResolveExecutable(configured)
 	if err == nil {
 		var version string
-		if version, err = ccproto.Version(exe); err == nil {
+		if version, err = ccproto.Version(ctx, exe); err == nil {
 			if ccproto.OlderThan(version, ccproto.MinVersion) {
 				host.Notify(fmt.Sprintf("Claude Code %s is older than the supported %s; update it. The bridge continues, but some behaviour may be missing.", version, ccproto.MinVersion), "warning")
 			}
+		} else if ctx.Err() != nil {
+			return "", ctx.Err()
 		} else if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, fs.ErrNotExist) {
 			// A version the bridge cannot read does not stop the query; spawning reports a real failure.
 			b.debugf("provider: cannot check the Claude Code version: %v", err)

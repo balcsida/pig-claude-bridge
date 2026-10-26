@@ -5,7 +5,8 @@
 //
 // The SDK is installed into a temp dir (removed afterwards) and imported from there, so the
 // working directory does not matter. Options mirror pi-claude-bridge src/index.ts:2030-2096
-// (provider) and :590-613 (isolated summary).
+// (provider), the same with makeCliDebugOptions (:96-113) as CLAUDE_BRIDGE_DEBUG=1 adds them
+// (provider-debug), and :590-613 (isolated summary).
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,15 +31,17 @@ try {
 	const env = { PATH: process.env.PATH, PI_CODING_AGENT: "true", ...CC_CHILD_ENV };
 	const cwd = tmp;
 
+	const provider = () => ({
+		cwd, env, tools: [], permissionMode: "bypassPermissions", includePartialMessages: true,
+		settings: { autoMemoryEnabled: false, claudeMdExcludes: ["**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"], includeGitInstructions: false },
+		systemPrompt: { type: "preset", preset: "claude_code", append: "APPEND" },
+		extraArgs: { model: "claude-opus-5-5", "replay-user-messages": null, "strict-mcp-config": null, "thinking-display": "summarized" },
+		effort: "high",
+		mcpServers: { "custom-tools": createSdkMcpServer({ name: "custom-tools", tools: [] }) },
+	});
 	const entries = [
-		["provider", {
-			cwd, env, tools: [], permissionMode: "bypassPermissions", includePartialMessages: true,
-			settings: { autoMemoryEnabled: false, claudeMdExcludes: ["**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"], includeGitInstructions: false },
-			systemPrompt: { type: "preset", preset: "claude_code", append: "APPEND" },
-			extraArgs: { model: "claude-opus-5-5", "replay-user-messages": null, "strict-mcp-config": null, "thinking-display": "summarized" },
-			effort: "high",
-			mcpServers: { "custom-tools": createSdkMcpServer({ name: "custom-tools", tools: [] }) },
-		}],
+		["provider", provider()],
+		["provider-debug", { ...provider(), debug: true, debugFile: join(tmp, "cli-debug.log") }],
 		["isolated-summary", {
 			cwd, env, settings: { autoMemoryEnabled: false }, tools: [], strictMcpConfig: true, settingSources: [],
 			skills: [], persistSession: false, systemPrompt: "SYSTEM", model: "claude-opus-5-5", maxTurns: 1, effort: "high",
@@ -55,14 +58,11 @@ try {
 			for await (const _ of query({ prompt: "hi", options })) { /* recorder exits before any message */ }
 		} catch { /* the recorder exits without speaking the protocol */ }
 		const rec = JSON.parse(readFileSync(out, "utf8"));
-		const normalise = (s) => s.replaceAll(tmp, "<tmp>");
-		let argv = rec.argv.map(normalise);
-		argv = argv.map((a) => (a.startsWith("--debug-file=") ? "--debug-file=<debug-file>" : a));
+		const argv = rec.argv.map((a) => (a.startsWith("--debug-file=") ? "--debug-file=<debug-file>" : a));
 		const initialize = JSON.parse(rec.initialize);
 		initialize.request_id = "<id>";
 		snapshot.push({ name, argv, env: rec.env, initialize });
 	}
-	for (const e of snapshot) delete e.env.RECORDER_OUT;
 	writeFileSync(join(repo, "extensions/pig-claude-bridge/internal/ccproto/testdata/sdk-argv-snapshot.json"),
 		JSON.stringify(snapshot, null, "\t") + "\n");
 } finally {

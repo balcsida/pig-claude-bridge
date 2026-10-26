@@ -137,8 +137,9 @@ func TestAPromptTheBridgeRefuses(t *testing.T) {
 		if len(h.spawns()) != 0 || len(h.b.liveContexts()) != 0 {
 			t.Fatal("no query may start and no context may stay claimed")
 		}
-		if _, err := os.Stat(config.DiagLogPath(agentDir)); err != nil {
-			t.Fatalf("the diag log: %v", err)
+		diag, err := os.ReadFile(config.DiagLogPath(agentDir))
+		if err != nil || !strings.Contains(string(diag), `"label":"prompt_capture_unresolved"`) || !strings.Contains(string(diag), `"reentrantUserQuery":false`) {
+			t.Fatalf("the diag log: %s, %v", diag, err)
 		}
 	})
 
@@ -419,10 +420,10 @@ func TestAgentStartCaptureDocumentedGaps(t *testing.T) {
 // --- unit-compaction-coexistence.mjs ---
 
 // The TypeScript drives a real pi session, extension runner and native summarizer;
-// PiG has no counterpart in this test, so the adaptation asserts the same
-// contract at the bridge's boundary: the bridge serves each summary on an isolated
-// process (never a provider query), never owns the compaction (its handlers return nothing), and records
-// the rewrite only when a compaction completed.
+// PiG has no counterpart in this test, so the adaptation asserts the same contract
+// at the bridge's boundary: the bridge serves each summary on an isolated process
+// (never a provider query), never owns the compaction (its handlers return
+// nothing), and records the rewrite only when a compaction completed.
 func TestBridgeLeavesCompactionAndBranchSummaryOwnershipToPiAndOtherExtensions(t *testing.T) {
 	t.Run("the before-compact and before-tree hooks only remember the session", func(t *testing.T) {
 		h := newProviderHarness(t, nil)

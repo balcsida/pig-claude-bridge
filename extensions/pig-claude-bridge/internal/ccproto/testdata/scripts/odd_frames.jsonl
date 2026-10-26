@@ -1,0 +1,4 @@
+{"type":"assistant","request_id":7,"n":1}
+{"type":5,"n":2}
+{"type":"control_response","response":{"request_id":9}}
+{"type":"result","response":"x","n":3}

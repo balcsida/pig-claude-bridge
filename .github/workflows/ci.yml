@@ -16,16 +16,17 @@ jobs:
           cache-dependency-path: extensions/pig-claude-bridge/go.sum
       - name: Format
         working-directory: extensions/pig-claude-bridge
-        run: test -z "$(gofmt -l .)"
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - name: Vet and test
         working-directory: extensions/pig-claude-bridge
-        run: go vet ./... && go test -race ./...
+        # ./... skips testdata, where the fake Claude CLI lives.
+        run: go vet ./... ./internal/ccproto/testdata/fakeclaude && go test -race ./...
       - name: Compile the live-tagged contract tests
         working-directory: extensions/pig-claude-bridge
         run: go vet -tags live ./internal/ccproto/
       - name: Compile the live integration module
         working-directory: tests/live
-        run: test -z "$(gofmt -l .)" && go vet -tags live ./...
+        run: test -z "$(gofmt -l . | tee /dev/stderr)" && go vet -tags live ./...
       - name: Self-test the live scripts (offline)
         run: |
           for f in scripts/live/*.sh; do bash -n "$f"; done

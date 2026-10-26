@@ -166,6 +166,11 @@ func TestDeleteSessionWipesTheCompanionDirectory(t *testing.T) {
 	if err := os.WriteFile(sentinel, []byte("stale artifact from a previous rebuild"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	for _, p := range []string{s1.Path(), sentinel} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("pre-check: %s should exist: %v", p, err)
+		}
+	}
 
 	if err := ccsession.Delete(id, cwd, ""); err != nil {
 		t.Fatal(err)

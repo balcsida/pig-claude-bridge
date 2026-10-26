@@ -825,11 +825,11 @@ func TestDiscardRewrittenQuery(t *testing.T) {
 	t.Run("marks the query abandoned so its completion cannot overwrite the rebuild", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		p := parkedQuery(t, b, "call_1", "pi-parent")
-		if b.isQueryAbandoned(p.client) {
+		if p.q.isAbandoned() {
 			t.Fatal("abandoned before the discard")
 		}
 		b.discardRewrittenQuery(p.q, discardReason)
-		if !b.isQueryAbandoned(p.client) {
+		if !p.q.isAbandoned() {
 			t.Fatal("its completion handler would capture the stale session id over the rebuilt one")
 		}
 	})
@@ -948,7 +948,7 @@ func TestAbortOnARunThatContinuesAParkedQuery(t *testing.T) {
 		})
 		// The second run takes over the parked query.
 		c.second = sdk.CreateAssistantMessageEventStream()
-		h.b.claimCurrentPiStream(c.second, "tool-result", h.q, nil)
+		h.b.claimCurrentPiStream(c.second, "tool-result", h.q)
 		h.q.resetTurnState(testModel)
 		return c
 	}
@@ -1248,6 +1248,46 @@ func TestConsumeLoop(t *testing.T) {
 		}
 	})
 
+	t.Run("keeps the captured session id when a later init frame has none", func(t *testing.T) {
+		h := newConsumeHarness(t)
+		res := h.consumeFrames(
+			map[string]any{"type": "system", "subtype": "init", "session_id": "cc-session"},
+			map[string]any{"type": "system", "subtype": "init"},
+			map[string]any{"type": "system", "subtype": "init", "session_id": ""})
+		if res.CapturedSessionID != "cc-session" {
+			t.Fatalf("captured = %q", res.CapturedSessionID)
+		}
+	})
+
+	// Claude Code can cancel a tools/call and issue another under the same tool use id;
+	// the cancelled handler must take only its own entry with it.
+	t.Run("a cancelled tool call leaves a later call's parked entry alone", func(t *testing.T) {
+		h := newConsumeHarness(t)
+		handler := h.b.toolCallHandler(h.q, "read")
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		firstDone := make(chan struct{})
+		go func() { defer close(firstDone); _, _ = handler(firstCtx, "toolu_1", nil) }()
+		waitParked(t, h.q, 1)
+		h.q.mu.Lock()
+		firstReply := h.q.pendingToolCalls["toolu_1"].reply
+		h.q.mu.Unlock()
+
+		second := make(chan convert.McpResult, 1)
+		go func() { r, _ := handler(context.Background(), "toolu_1", nil); second <- r }()
+		waitFor(t, "the second call to park", func() bool {
+			h.q.mu.Lock()
+			defer h.q.mu.Unlock()
+			return h.q.pendingToolCalls["toolu_1"].reply != firstReply
+		})
+		cancelFirst()
+		<-firstDone
+
+		h.b.deliverToolResults(context.Background(), nil, h.q, []convert.McpResult{{ToolCallID: "toolu_1", Content: convert.McpContent{{"type": "text", "text": "file"}}}}, nil, 3)
+		if got := receive(t, second, "the second call's result"); got.Content[0]["text"] != "file" {
+			t.Fatalf("result = %+v", got)
+		}
+	})
+
 	t.Run("skips a malformed frame and keeps consuming", func(t *testing.T) {
 		h := newConsumeHarness(t)
 		h.consumeFrames("not json", map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "done"})
@@ -1397,7 +1437,7 @@ func TestATurnStillStreaming(t *testing.T) {
 			waitFor(t, "the text to stream", func() bool {
 				h.q.mu.Lock()
 				defer h.q.mu.Unlock()
-				blocks, _ := h.q.turnBlocksLocked()
+				blocks := h.q.blocksLocked()
 				return len(blocks) == 1 && str(obj(blocks[0])["text"]) == "partial"
 			})
 			h.client.emit(failure.frames...)
@@ -1444,7 +1484,7 @@ func TestAbortedQueryDropsItsHeldRateLimitEvent(t *testing.T) {
 	receive(t, done, "teardown")
 
 	next := sdk.CreateAssistantMessageEventStream()
-	h.b.claimCurrentPiStream(next, "next query", h.q, nil)
+	h.b.claimCurrentPiStream(next, "next query", h.q)
 	h.b.reportHeldRateLimit(h.q)
 	if log := readDebugLog(t, h.agent); strings.Contains(log, "rate limit: headers") {
 		t.Fatalf("the next query heard from the aborted one:\n%s", log)
@@ -1509,15 +1549,30 @@ func TestRunBinderBindAndUnbindFromDifferentGoroutines(t *testing.T) {
 		go func() { defer wg.Done(); bind(ctx, sdk.CreateAssistantMessageEventStream()) }()
 		go func() { defer wg.Done(); unbind() }()
 		wg.Wait()
-		unbind()
 		cancel()
+	}
+}
+
+// A bind that loses the race to the teardown's unbind must not leave an abort
+// registered: the query is gone, and its run's cancellation must not reach it.
+func TestRunBinderIgnoresABindAfterUnbind(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	aborted := make(chan struct{}, 1)
+	bind, unbind := b.newRunBinder(newQueryContext(), context.Background(), func() { aborted <- struct{}{} })
+	unbind()
+	ctx, cancel := context.WithCancel(context.Background())
+	bind(ctx, sdk.CreateAssistantMessageEventStream())
+	cancel()
+	select {
+	case <-aborted:
+		t.Fatal("a bind after unbind aborted the query")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
 func TestPanicInTheResultFallbackStillEndsWithOneErrorEvent(t *testing.T) {
 	h := newConsumeHarness(t)
-	resultFallbackHook = func() { panic("fallback exploded") }
-	t.Cleanup(func() { resultFallbackHook = nil })
+	h.b.resultFallbackHook = func() { panic("fallback exploded") }
 	h.client.emit(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "x"})
 	done := h.start()
 	receive(t, done, "the consume goroutine (a held q.mu would deadlock failQuery)")
@@ -1540,4 +1595,19 @@ func TestKillClientContainsPanics(t *testing.T) {
 		return strings.Contains(log, "killClient interrupt: recovered from panic: interrupt exploded") &&
 			strings.Contains(log, "killClient close: recovered from panic: close exploded")
 	})
+}
+
+// An exited process and an abort both ready: the abort wins every time, as in the TypeScript.
+func TestAwaitExitPrefersTheAbort(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	fc := newFakeClient()
+	fc.exit(1, "boom")
+	<-fc.Done()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 100 {
+		if err := b.awaitExit(ctx, fc); err != nil {
+			t.Fatalf("awaitExit = %v, want the abort", err)
+		}
+	}
 }

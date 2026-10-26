@@ -117,6 +117,14 @@ func TestDescribeRateLimitFailure(t *testing.T) {
 	})
 }
 
+// Not ported from tests/unit-rate-limit.mjs, because they test the onResponse hand-off PiG
+// lacks (D1): "hands every recorded event to the provider call's onResponse" and "finishes the
+// turn when onResponse throws". "reports each event before the next event of the call that
+// owns the stream" is TestRateLimitEventsAreReportedOnTheCallThatOwnsTheStream
+// (provider_test.go), and "drops an aborted query's held event instead of reporting it on the
+// next query" holds by construction: the held event lives on the aborted query's own
+// QueryContext, which no later query reads.
+
 func rateLimitQuery() *QueryContext {
 	q := newQueryContext()
 	q.currentPiStream = &sdk.ModelEventStream{}
@@ -218,6 +226,14 @@ func TestHandleRateLimitEvent(t *testing.T) {
 		b.handleRateLimitEvent(h, q, RateLimitInfo{Status: "rejected"})
 		if q.lastRateLimitWarnStep != nil || q.lastRateLimitWarnThreshold != nil {
 			t.Fatal("dedupe not re-armed")
+		}
+	})
+	t.Run("a notice with no host to show it is dropped", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		q := newQueryContext()
+		b.handleRateLimitEvent(nil, q, RateLimitInfo{Status: "rejected"})
+		if q.rateLimitRejection == nil {
+			t.Fatal("the rejection must still be recorded")
 		}
 	})
 }

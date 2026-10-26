@@ -42,6 +42,49 @@
 		}
 	},
 	{
+		"name": "provider-debug",
+		"argv": [
+			"--output-format",
+			"stream-json",
+			"--verbose",
+			"--input-format",
+			"stream-json",
+			"--effort=high",
+			"--debug-file=<debug-file>",
+			"--tools=",
+			"--permission-mode=bypassPermissions",
+			"--include-partial-messages",
+			"--model",
+			"claude-opus-5-5",
+			"--replay-user-messages",
+			"--strict-mcp-config",
+			"--thinking-display",
+			"summarized",
+			"--settings",
+			"{\"autoMemoryEnabled\":false,\"claudeMdExcludes\":[\"**/CLAUDE.md\",\"**/AGENTS.md\",\"**/.claude/rules/**\"],\"includeGitInstructions\":false}"
+		],
+		"env": {
+			"PI_CODING_AGENT": "true",
+			"ENABLE_CLAUDEAI_MCP_SERVERS": "0",
+			"DISABLE_AUTO_COMPACT": "1",
+			"CLAUDE_CODE_ELEGANT_MEADOW": "0",
+			"CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
+			"CLAUDE_AGENT_SDK_VERSION": "0.3.310",
+			"CLAUDE_CODE_SDK_READS_SESSION_STATE": "1"
+		},
+		"initialize": {
+			"request_id": "<id>",
+			"type": "control_request",
+			"request": {
+				"subtype": "initialize",
+				"sdkMcpServers": [
+					"custom-tools"
+				],
+				"appendSystemPrompt": "APPEND"
+			}
+		}
+	},
+	{
 		"name": "isolated-summary",
 		"argv": [
 			"--output-format",

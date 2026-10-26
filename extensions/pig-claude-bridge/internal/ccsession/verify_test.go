@@ -52,4 +52,23 @@ func TestVerifyWrittenSession(t *testing.T) {
 		write("not json\n")
 		single(t, VerifyWrittenSession(path, sid, 1), `malformed JSONL`)
 	})
+
+	// Not in the TypeScript file. The TypeScript parses lines[0] of an empty file
+	// regardless (`"undefined" is not valid JSON`); the port names the cause instead.
+	t.Run("warns on an empty file expected to be empty", func(t *testing.T) {
+		write("")
+		single(t, VerifyWrittenSession(path, sid, 0), `^malformed JSONL .* err=no records$`)
+	})
+	t.Run("warns on a malformed last line", func(t *testing.T) {
+		write(rec(sid, 0) + "\n" + `{"sessionId":` + "\n")
+		single(t, VerifyWrittenSession(path, sid, 2), `malformed JSONL`)
+	})
+	t.Run("warns on a null record as malformed, not as drift", func(t *testing.T) {
+		write(rec(sid, 0) + "\nnull\n")
+		single(t, VerifyWrittenSession(path, sid, 2), `^malformed JSONL .* err=Cannot read properties of null \(reading 'sessionId'\)$`)
+	})
+	t.Run("warns on a non-object record as drift", func(t *testing.T) {
+		write(rec(sid, 0) + "\n[1]\n")
+		single(t, VerifyWrittenSession(path, sid, 2), `^sessionId drift .* last=<nil>$`)
+	})
 }

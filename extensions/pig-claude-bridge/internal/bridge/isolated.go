@@ -52,9 +52,11 @@ func extractIsolatedSummaryPrompt(messages []map[string]any) (string, error) {
 // becomes an error event, never an escape.
 func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piContext, options map[string]any, tag string, tools, allowedTools []string) (event map[string]any) {
 	fail := func(message string) map[string]any {
-		out := newAssistantOutput(model)
-		out["stopReason"], out["errorMessage"] = "error", message
-		return map[string]any{"type": "error", "reason": "error", "error": out}
+		return map[string]any{"type": "error", "reason": "error", "error": newAssistantOutput(model, "", "error", message)}
+	}
+	aborted := func() map[string]any {
+		b.debugf("compact summary: aborted")
+		return map[string]any{"type": "error", "reason": "aborted", "error": newAssistantOutput(model, "", "aborted", "Operation aborted")}
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -83,8 +85,11 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 			return fail(err.Error())
 		}
 	}
-	exe, err := b.resolveExecutable(host)
+	exe, err := b.resolveExecutable(ctx, host)
 	if err != nil {
+		if ctx.Err() != nil {
+			return aborted()
+		}
 		return fail(err.Error())
 	}
 	// D7: the most recent pending summary stands for the TypeScript's per-signal lookup.
@@ -108,12 +113,6 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 		SystemPrompt: str(piContext["systemPrompt"]), SystemPromptSet: true,
 		StrictMcpConfig: true, NoSessionPersistence: true,
 		Settings: map[string]any{"autoMemoryEnabled": false}, DebugFile: debugFile,
-	}
-	aborted := func() map[string]any {
-		out := newAssistantOutput(model)
-		out["stopReason"], out["errorMessage"] = "aborted", "Operation aborted"
-		b.debugf("compact summary: aborted")
-		return map[string]any{"type": "error", "reason": "aborted", "error": out}
 	}
 	// The process lives no longer than this call, so the call's abort also stops its start-up.
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -214,7 +213,5 @@ loop:
 		return fail(errorText)
 	}
 	b.debugf("compact summary: done textLen=%d", len([]rune(text)))
-	out := newAssistantOutput(model)
-	out["content"] = []any{map[string]any{"type": "text", "text": text}}
-	return map[string]any{"type": "done", "reason": "stop", "message": out}
+	return map[string]any{"type": "done", "reason": "stop", "message": newAssistantOutput(model, text, "stop", "")}
 }
