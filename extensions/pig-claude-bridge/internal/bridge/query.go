@@ -146,7 +146,7 @@ func (c *QueryContext) resetTurnState(model map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.model = model
-	c.turnOutput = newAssistantOutput(model)
+	c.turnOutput = newAssistantOutput(model, "", "stop", "")
 	c.turnStarted = false
 	c.turnSawStreamEvent = false
 	c.turnSawToolCall = false
@@ -155,11 +155,17 @@ func (c *QueryContext) resetTurnState(model map[string]any) {
 	c.turnStreamBlockStart = 0
 }
 
-// newAssistantOutput is the zeroed assistant message for model (index.ts newAssistantOutput).
-func newAssistantOutput(model map[string]any) map[string]any {
-	return map[string]any{
+// newAssistantOutput is an assistant message for model with zeroed usage (index.ts
+// newAssistantOutput): a non-empty text becomes its one text block, a non-empty
+// errorMessage is set.
+func newAssistantOutput(model map[string]any, text, stopReason, errorMessage string) map[string]any {
+	content := []any{}
+	if text != "" {
+		content = []any{map[string]any{"type": "text", "text": text}}
+	}
+	out := map[string]any{
 		"role":     "assistant",
-		"content":  []any{},
+		"content":  content,
 		"api":      model["api"],
 		"provider": model["provider"],
 		"model":    model["id"],
@@ -167,9 +173,13 @@ func newAssistantOutput(model map[string]any) map[string]any {
 			"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
 			"cost": map[string]any{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
 		},
-		"stopReason": "stop",
+		"stopReason": stopReason,
 		"timestamp":  time.Now().UnixMilli(),
 	}
+	if errorMessage != "" {
+		out["errorMessage"] = errorMessage
+	}
+	return out
 }
 
 var errPromptStreamClosed = errors.New("prompt stream closed")
@@ -242,7 +252,10 @@ func (p *PromptStream) Push(ctx context.Context, msg ccproto.UserMessage) error 
 
 // Next hands the writer the next message, first acking the previous one. It
 // returns false once the stream is ended and drained, failed, or ctx is
-// cancelled (abandonment: pending acks are rejected as closed).
+// cancelled (abandonment: pending acks are rejected as closed). The writer calls
+// Next until it returns false: only that next call acks the message it holds, so a
+// writer that stops early leaves that Push waiting until Fail (the query's
+// teardown) or the pusher's ctx.
 func (p *PromptStream) Next(ctx context.Context) (ccproto.UserMessage, bool) {
 	p.mu.Lock()
 	if p.inflight != nil {

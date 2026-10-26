@@ -40,18 +40,14 @@ const (
 // loop.
 func errorStream(model map[string]any, message string) *sdk.ModelEventStream {
 	stream := sdk.CreateAssistantMessageEventStream()
-	out := newAssistantOutput(model)
-	out["stopReason"], out["errorMessage"] = "error", message
-	stream.Push(map[string]any{"type": "error", "reason": "error", "error": out})
+	stream.Push(map[string]any{"type": "error", "reason": "error", "error": newAssistantOutput(model, "", "error", message)})
 	return stream
 }
 
 // abortedStream is a stream that ends its turn as aborted.
 func abortedStream(model map[string]any) *sdk.ModelEventStream {
 	stream := sdk.CreateAssistantMessageEventStream()
-	out := newAssistantOutput(model)
-	out["stopReason"], out["errorMessage"] = "aborted", "Operation aborted"
-	stream.Push(map[string]any{"type": "error", "reason": "aborted", "error": out})
+	stream.Push(map[string]any{"type": "error", "reason": "aborted", "error": newAssistantOutput(model, "", "aborted", "Operation aborted")})
 	return stream
 }
 

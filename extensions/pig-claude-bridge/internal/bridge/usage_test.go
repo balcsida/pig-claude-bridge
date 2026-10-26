@@ -10,7 +10,7 @@ var pricedModel = map[string]any{
 	"cost": map[string]any{"input": 1_000_000, "output": 2_000_000, "cacheRead": 0, "cacheWrite": 0},
 }
 
-func emptyOutput() map[string]any { return newAssistantOutput(testModel) }
+func emptyOutput() map[string]any { return newAssistantOutput(testModel, "", "stop", "") }
 
 // update decodes a usage frame the way the stream does, then applies it.
 func update(t *testing.T, output map[string]any, usage string, model map[string]any) UsageReport {
