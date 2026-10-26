@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -118,17 +120,15 @@ func TestInitializeIsFirstFrameAndAwaited(t *testing.T) {
 }
 
 func TestMcpMessageServedDuringInitialize(t *testing.T) {
-	var got struct {
-		server  string
-		message string
-	}
-	p, out := startFake(t, map[string]string{"FAKECLAUDE_MCP_BEFORE_INIT": "1"}, Handlers{
+	type call struct{ server, message string }
+	calls := make(chan call, 1)
+	_, out := startFake(t, map[string]string{"FAKECLAUDE_MCP_BEFORE_INIT": "1"}, Handlers{
 		OnMcpMessage: func(_ context.Context, server string, msg json.RawMessage) (json.RawMessage, bool, error) {
-			got.server, got.message = server, string(msg)
+			calls <- call{server, string(msg)}
 			return json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`), true, nil
 		},
 	})
-	_ = p
+	got := <-calls // Start returned, so the handler has run
 	lines := waitStdin(t, out, func(l []map[string]any) bool { return len(l) >= 2 })
 	if req, _ := lines[0]["request"].(map[string]any); req["subtype"] != "initialize" {
 		t.Fatalf("first frame = %v", lines[0])
@@ -144,7 +144,7 @@ func TestMcpMessageServedDuringInitialize(t *testing.T) {
 }
 
 func TestEchoedControlResponseIsDropped(t *testing.T) {
-	p, _ := startFake(t, map[string]string{
+	p, out := startFake(t, map[string]string{
 		"FAKECLAUDE_MCP_BEFORE_INIT": "1", "FAKECLAUDE_ECHO": "1", "FAKECLAUDE_SCRIPT": "frames_with_keepalive.jsonl",
 	}, Handlers{
 		OnMcpMessage: func(context.Context, string, json.RawMessage) (json.RawMessage, bool, error) {
@@ -152,10 +152,31 @@ func TestEchoedControlResponseIsDropped(t *testing.T) {
 		},
 	})
 	_ = p.EndInput()
+	frames := 0
 	for f := range p.Frames() {
+		frames++
 		if strings.Contains(string(f), "control_response") {
 			t.Fatalf("echoed control_response leaked into Frames: %s", f)
 		}
+	}
+	// The echo went out before initialize was answered, ahead of the script's frames.
+	if _, err := os.Stat(filepath.Join(out, "echoed")); err != nil || frames != 3 {
+		t.Fatalf("vacuous run: echoed marker %v, %d script frames", err, frames)
+	}
+}
+
+// The SDK parses a line and switches on its type, so a frame whose other fields have
+// unexpected types is still a message; only an unreadable control frame is dropped.
+func TestFramesWithUnexpectedFieldTypesAreDelivered(t *testing.T) {
+	p, _ := startFake(t, map[string]string{"FAKECLAUDE_SCRIPT": "odd_frames.jsonl"}, Handlers{})
+	_ = p.EndInput()
+	var got []string
+	for f := range p.Frames() {
+		got = append(got, string(f))
+	}
+	want := []string{`{"type":"assistant","request_id":7,"n":1}`, `{"type":5,"n":2}`, `{"type":"result","response":"x","n":3}`}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("frames:\n%s", strings.Join(got, "\n"))
 	}
 }
 
@@ -191,6 +212,68 @@ func TestCloseEndsStdinThenTermThenKill(t *testing.T) {
 	}
 	if err := p.Wait(); err == nil || err.Error() != "Claude Code process terminated by signal SIGKILL" {
 		t.Fatalf("Wait = %v", err)
+	}
+}
+
+func TestCloseWithAnExpiredContextStillStopsTheChild(t *testing.T) {
+	p, _ := startFake(t, map[string]string{"FAKECLAUDE_IGNORE_TERM": "1"}, Handlers{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Close(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close = %v", err)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the child outlived a Close whose context had expired")
+	}
+	if err := p.Wait(); err == nil || err.Error() != "Claude Code process terminated by signal SIGKILL" {
+		t.Fatalf("Wait = %v", err)
+	}
+}
+
+func TestShutdownKillsEveryTrackedChild(t *testing.T) {
+	p, _ := startFake(t, map[string]string{"FAKECLAUDE_HOLD": "1"}, Handlers{})
+	_ = p.EndInput() // the fake keeps running after its input ends, as Claude Code parked at a tool call does
+	isTracked := func() bool {
+		trackedMu.Lock()
+		defer trackedMu.Unlock()
+		_, ok := tracked[p]
+		return ok
+	}
+	if !isTracked() {
+		t.Fatal("a running child is not tracked")
+	}
+	Shutdown()
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown left the child running")
+	}
+	if err := p.Wait(); err == nil || err.Error() != "Claude Code process terminated by signal SIGKILL" {
+		t.Fatalf("Wait = %v", err)
+	}
+	if isTracked() {
+		t.Fatal("an exited child is still tracked")
+	}
+}
+
+func TestSignalNameFallsBackToTheNumber(t *testing.T) {
+	if got := signalName(syscall.SIGPIPE); got != "SIGPIPE" {
+		t.Errorf("SIGPIPE = %q", got)
+	}
+	if got := signalName(syscall.Signal(99)); got != "99" {
+		t.Errorf("signal 99 = %q", got)
+	}
+}
+
+func TestStderrTailKeepsTheLast2048Characters(t *testing.T) {
+	stderr := strings.Repeat("a", 1000) + strings.Repeat("é", 2048)
+	p, _ := startFake(t, map[string]string{"FAKECLAUDE_STDERR": stderr}, Handlers{})
+	_ = p.EndInput()
+	_ = p.Wait()
+	if got := p.StderrTail(); got != strings.Repeat("é", 2048) {
+		t.Fatalf("tail has %d runes, starts %q", len([]rune(got)), got[:min(len(got), 8)])
 	}
 }
 
@@ -256,7 +339,20 @@ func TestCloseReturnsWhileWriteIsBlocked(t *testing.T) {
 	p, _ := startFake(t, map[string]string{"FAKECLAUDE_STOP_READING": "1"}, Handlers{})
 	wrote := make(chan error, 1)
 	go func() { wrote <- p.WriteUser(UserMessage{Content: strings.Repeat("x", 4<<20)}) }()
-	time.Sleep(100 * time.Millisecond) // the 4 MB frame cannot fit the pipe, so the write is blocked
+	// The write holds wmu once the frame is encoded (slow under -race); the 4 MB frame cannot fit the pipe.
+	for deadline := time.Now().Add(5 * time.Second); p.wmu.TryLock(); {
+		p.wmu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("the write never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case err := <-wrote:
+		t.Fatalf("the write was not blocked: %v", err)
+	default:
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := p.Close(ctx); err != nil {
@@ -267,8 +363,9 @@ func TestCloseReturnsWhileWriteIsBlocked(t *testing.T) {
 	default:
 		t.Fatal("child still running after Close")
 	}
-	if err := <-wrote; err == nil {
-		t.Fatal("blocked WriteUser succeeded")
+	// A pipe error, not "claude process is closed": the write was under way when Close ran.
+	if err := <-wrote; err == nil || !strings.HasPrefix(err.Error(), "write to claude: ") {
+		t.Fatalf("blocked WriteUser = %v", err)
 	}
 }
 
@@ -276,12 +373,15 @@ func TestWaitIsBoundedWhenGrandchildHoldsPipes(t *testing.T) {
 	cg, dg := CloseGrace, DrainGrace
 	CloseGrace, DrainGrace = 100*time.Millisecond, 100*time.Millisecond
 	t.Cleanup(func() { CloseGrace, DrainGrace = cg, dg })
-	p, _ := startFake(t, map[string]string{"FAKECLAUDE_GRANDCHILD": "1"}, Handlers{})
+	p, out := startFake(t, map[string]string{"FAKECLAUDE_GRANDCHILD": "1"}, Handlers{})
 	_ = p.EndInput()
 	select {
 	case <-p.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("Done not closed while a grandchild holds the pipes")
+	}
+	if argv, _ := os.ReadFile(filepath.Join(out, "argv.json")); !strings.Contains(string(argv), "--input-format") {
+		t.Fatalf("the grandchild overwrote the fake's argv.json: %s", argv)
 	}
 	select {
 	case _, ok := <-p.Frames():

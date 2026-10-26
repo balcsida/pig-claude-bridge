@@ -71,10 +71,10 @@ func Version(exe string) (string, error) {
 	return m[1], nil
 }
 
-// OlderThan reports whether version is numerically older than min; unparsable input is not older.
-func OlderThan(version, min string) bool {
+// OlderThan reports whether version is numerically older than minimum; unparsable input is not older.
+func OlderThan(version, minimum string) bool {
 	a, okA := parseSemver(version)
-	b, okB := parseSemver(min)
+	b, okB := parseSemver(minimum)
 	if !okA || !okB {
 		return false
 	}

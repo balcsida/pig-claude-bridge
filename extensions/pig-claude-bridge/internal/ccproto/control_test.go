@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // sameJSON compares two JSON documents structurally.
@@ -58,8 +60,76 @@ func TestUnknownControlSubtypeErrorText(t *testing.T) {
 			t.Errorf("%s: got %v, want error %q", id, r, want)
 		}
 	}
-	if r := responseFor(lines, "u4"); r != nil {
-		t.Errorf("request_user_dialog answered: %v", r)
+	// Left unanswered, as the SDK leaves them.
+	for _, id := range []string{"u4", "r1", "r2", "r3", "r4"} {
+		if r := responseFor(lines, id); r != nil {
+			t.Errorf("%s answered: %v", id, r)
+		}
+	}
+}
+
+func TestControlCancelRequestCancelsTheHandler(t *testing.T) {
+	cancelled := make(chan struct{})
+	startFake(t, map[string]string{"FAKECLAUDE_SCRIPT": "cancel.jsonl"}, Handlers{
+		OnMcpMessage: func(ctx context.Context, _ string, _ json.RawMessage) (json.RawMessage, bool, error) {
+			<-ctx.Done()
+			close(cancelled)
+			return nil, false, ctx.Err()
+		},
+	})
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("control_cancel_request did not cancel the handler's context")
+	}
+}
+
+func TestDuplicateInflightRequestIDIsIgnored(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	p, out := startFake(t, map[string]string{"FAKECLAUDE_SCRIPT": "duplicate_id.jsonl"}, Handlers{
+		OnMcpMessage: func(context.Context, string, json.RawMessage) (json.RawMessage, bool, error) {
+			calls.Add(1)
+			<-release
+			return json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{}}`), true, nil
+		},
+	})
+	<-p.Frames() // the frame after both d1 requests: frames are dispatched in order, so both were seen
+	close(release)
+	lines := waitStdin(t, out, func(l []map[string]any) bool { return responseFor(l, "d1") != nil })
+	n := 0
+	for _, l := range lines {
+		if r, _ := l["response"].(map[string]any); l["type"] == "control_response" && r["request_id"] == "d1" {
+			n++
+		}
+	}
+	if calls.Load() != 1 || n != 1 {
+		t.Fatalf("handler ran %d times, %d responses; want 1 and 1", calls.Load(), n)
+	}
+}
+
+func TestInboundHandlersRunConcurrently(t *testing.T) {
+	entered := make(chan struct{}, 2)
+	both := make(chan struct{})
+	_, out := startFake(t, map[string]string{"FAKECLAUDE_SCRIPT": "two_mcp_calls.jsonl"}, Handlers{
+		OnMcpMessage: func(context.Context, string, json.RawMessage) (json.RawMessage, bool, error) {
+			entered <- struct{}{}
+			select {
+			case <-both:
+			case <-time.After(5 * time.Second):
+				return nil, false, fmt.Errorf("the other handler never ran alongside this one")
+			}
+			return json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{}}`), true, nil
+		},
+	})
+	<-entered
+	<-entered
+	close(both)
+	lines := waitStdin(t, out, func(l []map[string]any) bool { return responseFor(l, "p1") != nil && responseFor(l, "p2") != nil })
+	for _, id := range []string{"p1", "p2"} {
+		if r := responseFor(lines, id); r["subtype"] != "success" {
+			t.Errorf("%s = %v", id, r)
+		}
 	}
 }
 

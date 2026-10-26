@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -264,6 +265,8 @@ func (p *Process) Close(ctx context.Context) error {
 			return nil
 		case <-ctx.Done():
 			timer.Stop()
+			// Nothing escalates once Close returns, so a caller that stops waiting must not leave the child running.
+			_ = p.cmd.Process.Kill()
 			return ctx.Err()
 		case <-timer.C:
 			_ = p.cmd.Process.Signal(step.sig)
@@ -298,17 +301,30 @@ func (p *Process) readStdout(r io.Reader) {
 }
 
 func (p *Process) dispatch(line []byte) {
-	var h frameHead
-	if json.Unmarshal(line, &h) != nil {
+	var frame struct {
+		Type json.RawMessage `json:"type"`
+	}
+	if json.Unmarshal(line, &frame) != nil {
 		return // non-JSON stdout is ignored (reference 1.4)
 	}
-	switch h.Type {
-	case "control_request":
-		p.serveRequest(h)
-	case "control_response":
-		p.deliver(h)
-	case "control_cancel_request":
-		p.cancelInflight(h.RequestID)
+	// Only the type is read up front, as the SDK switches on it: a frame whose other fields
+	// have unexpected types still reaches Frames. A non-string type is no control frame.
+	var typ string
+	_ = json.Unmarshal(frame.Type, &typ)
+	switch typ {
+	case "control_request", "control_response", "control_cancel_request":
+		var h frameHead
+		if json.Unmarshal(line, &h) != nil {
+			return // a control frame whose ids are not strings cannot be paired or answered
+		}
+		switch typ {
+		case "control_request":
+			p.serveRequest(h)
+		case "control_response":
+			p.deliver(h)
+		default:
+			p.cancelInflight(h.RequestID)
+		}
 	case "keep_alive", "transcript_mirror":
 	default:
 		p.qmu.Lock()
@@ -426,6 +442,7 @@ func (p *Process) exitError(state *os.ProcessState, err error) error {
 	return fmt.Errorf("Claude Code process exited with code %d. stderr: %s", state.ExitCode(), string(p.tail))
 }
 
+// signalName is the name Node reports for s, or its number for a signal not listed here.
 func signalName(s syscall.Signal) string {
 	switch s {
 	case syscall.SIGTERM:
@@ -436,8 +453,18 @@ func signalName(s syscall.Signal) string {
 		return "SIGINT"
 	case syscall.SIGHUP:
 		return "SIGHUP"
+	case syscall.SIGPIPE:
+		return "SIGPIPE"
+	case syscall.SIGQUIT:
+		return "SIGQUIT"
+	case syscall.SIGABRT:
+		return "SIGABRT"
+	case syscall.SIGSEGV:
+		return "SIGSEGV"
+	case syscall.SIGBUS:
+		return "SIGBUS"
 	}
-	return fmt.Sprintf("signal %d", int(s))
+	return strconv.Itoa(int(s))
 }
 
 // completeRunes returns the length of the prefix of b that does not end inside a multi-byte rune.

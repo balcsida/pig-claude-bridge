@@ -8,19 +8,22 @@ import (
 	"testing"
 )
 
+// The provider routes its model, the strict MCP flag and the thinking display through extraArgs
+// (index.ts:2030-2096), so they come after the options, as two-token pairs or bare flags.
 func TestBuildArgsProviderShape(t *testing.T) {
 	o := Options{
 		Effort: "high", Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions",
-		IncludePartialMessages: true, Resume: "abc-123", Model: "claude-opus-4-7", StrictMcpConfig: true,
+		IncludePartialMessages: true, Resume: "abc-123",
 		Settings:  map[string]any{"includeGitInstructions": false, "claudeMdExcludes": []string{"**/CLAUDE.md"}},
 		DebugFile: "/tmp/cli.log",
-		ExtraArgs: []ExtraArg{{Key: "replay-user-messages"}, {Key: "thinking-display", Value: ptr("summarized")}},
+		ExtraArgs: []ExtraArg{{Key: "model", Value: ptr("claude-opus-4-7")}, {Key: "replay-user-messages"},
+			{Key: "strict-mcp-config"}, {Key: "thinking-display", Value: ptr("summarized")}},
 	}
 	want := []string{
 		"--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
-		"--effort=high", "--model=claude-opus-4-7", "--debug-file=/tmp/cli.log", "--resume=abc-123", "--tools=",
-		"--strict-mcp-config", "--permission-mode=bypassPermissions", "--include-partial-messages",
-		"--replay-user-messages", "--thinking-display", "summarized",
+		"--effort=high", "--debug-file=/tmp/cli.log", "--resume=abc-123", "--tools=",
+		"--permission-mode=bypassPermissions", "--include-partial-messages",
+		"--model", "claude-opus-4-7", "--replay-user-messages", "--strict-mcp-config", "--thinking-display", "summarized",
 		"--settings", `{"claudeMdExcludes":["**/CLAUDE.md"],"includeGitInstructions":false}`,
 	}
 	if got := BuildArgs(o); !reflect.DeepEqual(got, want) {
@@ -28,6 +31,8 @@ func TestBuildArgsProviderShape(t *testing.T) {
 	}
 }
 
+// The minimal isolated flag set and its order. The full isolated argv, with --effort, --resume
+// and --settings, is pinned by the Node SDK snapshot (isolated-summary).
 func TestBuildArgsIsolatedShape(t *testing.T) {
 	o := Options{Tools: nil, ToolsSet: true, NoSessionPersistence: true, StrictMcpConfig: true, Model: "m", MaxTurns: 2, SettingSourcesSet: true}
 	want := []string{"--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
@@ -57,16 +62,11 @@ func TestExtraArgNilEmitsBareFlag(t *testing.T) {
 	}
 }
 
+// SDK MCP servers, the system prompt and skills travel in initialize; none adds an argv token.
 func TestBuildArgsNeverEmitsMcpOrSystemPrompt(t *testing.T) {
-	got := BuildArgs(Options{SDKMcpServers: []string{"pig"}, AppendSystemPrompt: "hi"})
-	for _, a := range got {
-		switch a {
-		case "--mcp-config", "--append-system-prompt", "--system-prompt":
-			t.Fatalf("unexpected %s", a)
-		}
-		if len(a) >= 22 && a[:22] == "--permission-prompt-to" {
-			t.Fatalf("unexpected %s", a)
-		}
+	got := BuildArgs(Options{SDKMcpServers: []string{"pig"}, AppendSystemPrompt: "hi", SystemPrompt: "s", SystemPromptSet: true, Skills: []string{}})
+	if want := BuildArgs(Options{}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
@@ -88,6 +88,21 @@ func TestBuildEnvOverridesNonessentialTraffic(t *testing.T) {
 	env := BuildEnv([]string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0"}, Options{})
 	if got := slices.Index(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"); got < slices.Index(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0") {
 		t.Fatalf("the inherited value wins: %q", env)
+	}
+}
+
+// The SDK sets the entry point and version when their exact-case key is missing or empty, and
+// the session-state flag when no key matches it in any case.
+func TestBuildEnvChecksIdentityVariablesAsTheSdkDoes(t *testing.T) {
+	env := BuildEnv([]string{"claude_code_entrypoint=custom", "CLAUDE_AGENT_SDK_VERSION="}, Options{})
+	for _, w := range []string{"CLAUDE_CODE_ENTRYPOINT=sdk-ts", "CLAUDE_AGENT_SDK_VERSION=0.3.310", "CLAUDE_CODE_SDK_READS_SESSION_STATE=1"} {
+		if !slices.Contains(env, w) {
+			t.Errorf("missing %s in %q", w, env)
+		}
+	}
+	env = BuildEnv([]string{"Claude_Code_Sdk_Reads_Session_State="}, Options{})
+	if slices.Contains(env, "CLAUDE_CODE_SDK_READS_SESSION_STATE=1") {
+		t.Errorf("a case variant of the session-state flag must keep the SDK from setting it: %q", env)
 	}
 }
 

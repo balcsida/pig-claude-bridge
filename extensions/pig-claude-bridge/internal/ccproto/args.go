@@ -3,6 +3,7 @@ package ccproto
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,8 +27,11 @@ type ExtraArg struct {
 
 // Options describes one Claude Code child process.
 type Options struct {
-	Executable, Cwd                       string
-	Env                                   []string // extra entries appended to the base environment by BuildEnv
+	Executable, Cwd string
+	Env             []string // extra entries appended to the base environment by BuildEnv
+	// Model is the SDK's model option (--model=<id>). The provider and AskClaude pass their
+	// model through ExtraArgs instead (two tokens, as the TypeScript's extraArgs.model); only
+	// the isolated query sets Model.
 	Model, Effort, Resume                 string
 	MaxTurns                              int
 	StrictMcpConfig, NoSessionPersistence bool
@@ -118,9 +122,7 @@ func settingsJSON(settings map[string]any) string {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(settings); err != nil {
-		return "{}"
-	}
+	_ = enc.Encode(settings) // the bridge's settings are bools, strings and string lists, which cannot fail to encode
 	return strings.TrimSuffix(buf.String(), "\n")
 }
 
@@ -136,22 +138,27 @@ func BuildEnv(base []string, o Options) []string {
 			env = append(env, kv)
 		}
 	}
-	isSet := func(key string) bool {
+	// As the SDK: the entry point and version are set when their exact-case key is missing
+	// or empty (`if (!env.X)`), the session-state flag when no key matches it case-insensitively.
+	value := func(key string) (v string) {
 		for _, kv := range env {
-			if strings.EqualFold(strings.SplitN(kv, "=", 2)[0], key) {
-				return true
+			if k, val, _ := strings.Cut(kv, "="); k == key {
+				v = val // the last duplicate wins
 			}
 		}
-		return false
+		return v
 	}
-	for _, d := range [][2]string{
-		{"CLAUDE_CODE_ENTRYPOINT", "sdk-ts"},
-		{"CLAUDE_AGENT_SDK_VERSION", sdkVersion},
-		{"CLAUDE_CODE_SDK_READS_SESSION_STATE", "1"},
-	} {
-		if !isSet(d[0]) {
-			env = append(env, d[0]+"="+d[1])
-		}
+	if value("CLAUDE_CODE_ENTRYPOINT") == "" {
+		env = append(env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts")
+	}
+	if value("CLAUDE_AGENT_SDK_VERSION") == "" {
+		env = append(env, "CLAUDE_AGENT_SDK_VERSION="+sdkVersion)
+	}
+	if !slices.ContainsFunc(env, func(kv string) bool {
+		k, _, _ := strings.Cut(kv, "=")
+		return strings.EqualFold(k, "CLAUDE_CODE_SDK_READS_SESSION_STATE")
+	}) {
+		env = append(env, "CLAUDE_CODE_SDK_READS_SESSION_STATE=1")
 	}
 	keys := make([]string, 0, len(CCChildEnv))
 	for k := range CCChildEnv {
