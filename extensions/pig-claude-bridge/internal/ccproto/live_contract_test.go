@@ -68,10 +68,14 @@ func scratchDir(t *testing.T) string {
 	return dir
 }
 
-// providerOptions mirrors the TypeScript providerOptions: no builtin tools, bypass permissions, strict MCP.
-func providerOptions(t *testing.T) Options {
+// providerOptions mirrors the TypeScript providerOptions: no builtin tools, bypass permissions, strict MCP,
+// in a fresh scratch directory.
+func providerOptions(t *testing.T) Options { return providerOptionsIn(t, scratchDir(t)) }
+
+// providerOptionsIn is providerOptions in cwd, for a test that owns its directory.
+func providerOptionsIn(t *testing.T, cwd string) Options {
 	return Options{
-		Executable: claudeOnPath(t), Cwd: scratchDir(t), Model: liveModel, MaxTurns: 6,
+		Executable: claudeOnPath(t), Cwd: cwd, Model: liveModel, MaxTurns: 6,
 		ToolsSet: true, PermissionMode: "bypassPermissions", StrictMcpConfig: true,
 	}
 }
@@ -199,7 +203,6 @@ type observed struct {
 	toolResults []map[string]any
 	assistants  []map[string]any
 	events      []map[string]any
-	closed      bool // stdout ended before stop was satisfied
 }
 
 // at walks nested maps (string keys) and slices (int keys); nil when absent.
@@ -239,7 +242,6 @@ func collect(t *testing.T, p *Process, stop func(map[string]any) bool) *observed
 		select {
 		case raw, ok := <-p.Frames():
 			if !ok {
-				o.closed = true
 				err, _ := boundedWait(p)
 				t.Logf("stdout ended before the awaited frame; exit: %v; stderr tail: %s", err, p.StderrTail())
 				return o
@@ -255,8 +257,12 @@ func collect(t *testing.T, p *Process, stop func(map[string]any) bool) *observed
 					o.init = f
 				}
 			case "assistant":
+				blocks, ok := at(f, "message", "content").([]any)
+				if !ok {
+					t.Fatalf("assistant frame without a content array: %v", f)
+				}
 				o.assistants = append(o.assistants, f)
-				for _, b := range at(f, "message", "content").([]any) {
+				for _, b := range blocks {
 					if at(b, "type") == "tool_use" {
 						o.toolUses = append(o.toolUses, toolUse{str(at(b, "id")), str(at(b, "name"))})
 					}
@@ -355,7 +361,8 @@ func newUUID(t *testing.T) string {
 func assistantText(o *observed) string {
 	var sb strings.Builder
 	for _, a := range o.assistants {
-		for _, b := range at(a, "message", "content").([]any) {
+		blocks, _ := at(a, "message", "content").([]any) // collect checked the shape
+		for _, b := range blocks {
 			if at(b, "type") == "text" {
 				sb.WriteString(str(at(b, "text")))
 			}
@@ -439,8 +446,7 @@ func TestUnservedToolUseIsAnsweredByCCNeverDispatched(t *testing.T) {
 		}
 	}
 	if len(bogus) == 0 {
-		t.Log("model declined the bait; nothing more to pin")
-		return
+		t.Skip("model declined the bait: the never-dispatched half passed, the rejection shape went unchecked")
 	}
 	for _, u := range bogus {
 		var rejection map[string]any
@@ -551,7 +557,8 @@ func TestIsErrorCanBeTrueOnAResultWhoseSubtypeIsStillSuccess(t *testing.T) {
 			t.Errorf("failure report is not synthetic: model=%s", m)
 		}
 		found := false
-		for _, b := range at(a, "message", "content").([]any) {
+		blocks, _ := at(a, "message", "content").([]any) // collect checked the shape
+		for _, b := range blocks {
 			found = found || at(b, "type") == "text" && tooLong.MatchString(str(at(b, "text")))
 		}
 		if !found {
@@ -710,10 +717,15 @@ func TestInitializeResultAcceptedByCLI(t *testing.T) {
 		t.Errorf("MCP initialize params changed: %v", params)
 	}
 	t.Logf("MCP initialize params: %v", params)
-	if !slicesContain(at(o.init, "tools").([]any), "mcp__custom-tools__alpha") {
+	tools, ok := at(o.init, "tools").([]any)
+	servers, ok2 := at(o.init, "mcp_servers").([]any)
+	if !ok || !ok2 {
+		t.Fatalf("system/init lacks the tools or mcp_servers list: %v", o.init)
+	}
+	if !slicesContain(tools, "mcp__custom-tools__alpha") {
 		t.Errorf("init.tools lacks the served tool: %v", o.init["tools"])
 	}
-	for _, s := range at(o.init, "mcp_servers").([]any) {
+	for _, s := range servers {
 		if at(s, "name") == "custom-tools" && at(s, "status") != "connected" {
 			t.Errorf("custom-tools status = %v, want connected", at(s, "status"))
 		}
@@ -742,8 +754,8 @@ func TestJSONSchemaIsServedVerbatimNestedObjectsAndAnyOfConstSurvive(t *testing.
 // --- session transcripts and --resume ---
 
 func resumeOptions(t *testing.T, cwd, sessionID string) Options {
-	o := providerOptions(t)
-	o.Cwd, o.Resume, o.MaxTurns = cwd, sessionID, 2
+	o := providerOptionsIn(t, cwd)
+	o.Resume, o.MaxTurns = sessionID, 2
 	return o
 }
 
@@ -767,9 +779,10 @@ func TestResumeRereadsTheJSONLFromDiskOnEveryCall(t *testing.T) {
 		}
 	}
 	ask := func() string {
-		o := resumeOptions(t, cwd, id)
-		o.ToolsSet, o.Tools = true, nil
-		return assistantText(run(t, startLive(t, o, nil), "What token did I ask you to remember? Reply with just the word."))
+		p := startLive(t, resumeOptions(t, cwd, id), nil)
+		// End this child before the next resume: a parked one could still flush into the session.
+		defer func() { _ = p.EndInput(); _, _ = boundedWait(p) }()
+		return assistantText(run(t, p, "What token did I ask you to remember? Reply with just the word."))
 	}
 	seed("FOXGLOVE")
 	if first := ask(); !strings.Contains(strings.ToLower(first), "foxglove") {
@@ -849,17 +862,15 @@ func TestCCWritesEachToolResultOfAParallelTurnAsItsOwnTranscriptRecord(t *testin
 func TestRepairToolPairingKeepsEveryResultOnlyWhenTheyShareOneUserMessage(t *testing.T) {
 	claudeOnPath(t) // part of the live suite; needs no child itself
 	ids := []string{"t1", "t2", "t3"}
-	var uses []ccsession.Block
-	var combined, results []ccsession.Block
+	var uses, combined []ccsession.Block
 	split := []ccsession.Message{{Role: "user", Content: "go"}}
 	for _, id := range ids {
 		uses = append(uses, ccsession.ToolUseBlock{Type: "tool_use", ID: id, Name: "Read", Input: map[string]any{}})
-		r := ccsession.ToolResultBlock{Type: "tool_result", ToolUseID: id, Content: "RESULT-" + id}
-		combined, results = append(combined, r), append(results, r)
+		combined = append(combined, ccsession.ToolResultBlock{Type: "tool_result", ToolUseID: id, Content: "RESULT-" + id})
 	}
 	assistant := ccsession.Message{Role: "assistant", Content: uses}
 	split = append(split, assistant)
-	for _, r := range results {
+	for _, r := range combined {
 		split = append(split, ccsession.Message{Role: "user", Content: []ccsession.Block{r}})
 	}
 	single := []ccsession.Message{{Role: "user", Content: "go"}, assistant, {Role: "user", Content: combined}}
@@ -1088,8 +1099,8 @@ func TestIncludeGitInstructionsFalseStripsGitStatusAndKeepsThePresetStaticAcross
 	git("init", "-q")
 	git("commit", "--allow-empty", "-qm", "init")
 	opts := func(settings map[string]any, resume string) Options {
-		o := providerOptions(t)
-		o.Cwd, o.MaxTurns, o.Settings, o.Resume = repo, 1, settings, resume
+		o := providerOptionsIn(t, repo)
+		o.MaxTurns, o.Settings, o.Resume = 1, settings, resume
 		o.Env = []string{"ANTHROPIC_BASE_URL=" + api.URL}
 		return o
 	}
@@ -1106,6 +1117,9 @@ func TestIncludeGitInstructionsFalseStripsGitStatusAndKeepsThePresetStaticAcross
 	}
 	turn(opts(nil, ""))
 	c := api.presetRequests()
+	if len(c) < 2 {
+		t.Fatalf("want two preset requests from the control turns, got %d", len(c))
+	}
 	c1, c2 := c[len(c)-2], c[len(c)-1]
 	if !strings.Contains(string(mustJSON(at(c1, "messages", 0))), "gitStatus") || !strings.Contains(string(mustJSON(at(c2, "messages", 0))), "gitStatus") {
 		t.Fatal("the git snapshot no longer rides in the leading user message; re-point this control")
@@ -1125,6 +1139,9 @@ func TestIncludeGitInstructionsFalseStripsGitStatusAndKeepsThePresetStaticAcross
 	}
 	turn(opts(off, str(base.result["session_id"])))
 	p := api.presetRequests()
+	if len(p) < 4 {
+		t.Fatalf("want four preset requests after the setting's two turns, got %d", len(p))
+	}
 	t1, t2 := p[len(p)-2], p[len(p)-1]
 	for _, body := range []map[string]any{t1, t2} {
 		if strings.Contains(string(mustJSON(map[string]any{"system": body["system"], "messages": body["messages"]})), "gitStatus") {
