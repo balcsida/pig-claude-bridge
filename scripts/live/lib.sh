@@ -158,10 +158,12 @@ check_deadlock_logs() {
 		f=$(mktemp)
 		printf '%s\n' \
 			'[2026-10-25T12:00:00.000Z] WARNING: 2 MCP handlers still waiting after delivering 1 results' \
-			'[2026-10-25T12:00:01.000Z] provider: streamSimple called, activeQuery=false, lastMsgRole=user' > "$f"
+			'[2026-10-25T12:00:01.000Z] provider: streamSimple called, activeQuery=false, lastMsgRole=user' \
+			'[2026-10-25T12:00:02.000Z] BUG: both maps non-empty! handlers=1 results=1' \
+			'[2026-10-25T12:00:03.000Z] provider: reply quoted "BUG: both maps non-empty"' > "$f"
 		hits=$(grep -nE "$DEADLOCK_RE" "$f" | cut -d: -f1 | tr '\n' ' ')
 		rm -f "$f"
-		[ "$hits" = "1 " ] || { echo "check_deadlock_logs --selftest: FAIL (matched lines: '${hits}', want '1 ')" >&2; return 1; }
+		[ "$hits" = "1 3 " ] || { echo "check_deadlock_logs --selftest: FAIL (matched lines: '${hits}', want '1 3 ')" >&2; return 1; }
 		echo "check_deadlock_logs --selftest: ok"
 		return 0
 	fi

@@ -97,9 +97,12 @@ run "system prompt: --system-prompt reaches Claude" \
 # bare name, so the user message --mode json echoes back cannot false-positive.
 # A separate "is it registered" check by asking the model to enumerate its tools
 # was dropped as both weaker and flaky — models summarise and omit custom tools.
-if [ -z "$ALT_PROVIDER" ] || [ -z "$ALT_MODEL" ]; then
+MISSING_ALT=""
+[ -n "$ALT_PROVIDER" ] || MISSING_ALT="CLAUDE_BRIDGE_TESTING_ALT_PROVIDER"
+[ -n "$ALT_MODEL" ] || MISSING_ALT="${MISSING_ALT:+$MISSING_ALT / }CLAUDE_BRIDGE_TESTING_ALT_MODEL"
+if [ -n "$MISSING_ALT" ]; then
   printf "%-50s " "tool: AskClaude responds"
-  echo "SKIP (CLAUDE_BRIDGE_TESTING_ALT_PROVIDER unset)"
+  echo "SKIP ($MISSING_ALT unset)"
   ((++SKIP))
 else
   enable_ask_claude

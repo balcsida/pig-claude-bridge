@@ -5,7 +5,7 @@
 source "$(dirname "$0")/lib.sh"
 
 command -v pig >/dev/null || { echo "pig is not installed" >&2; exit 1; }
-require_command jq
+require_command jq claude
 mkdir -p "$WORK" "$LOGDIR"
 init_pig_home
 echo "PiG $(pig --version) · claude $(claude --version) · work directory $WORK"
@@ -29,7 +29,7 @@ FIFO="$WORK/idle.fifo"; rm -f "$FIFO"; mkfifo "$FIFO"
 export CLAUDE_BRIDGE_DEBUG=1 CLAUDE_BRIDGE_DEBUG_PATH="$LOGDIR/verify-idle-debug.log"
 ( cd "$WORK/project" && exec pig --no-session -ne -e "$ROOT" --mode rpc < "$FIFO" > "$LOGDIR/verify-idle.log" 2>&1 ) &
 PIG_PID=$!
-exec 3>"$FIFO"
+exec 3<>"$FIFO" # read-write, so the open cannot block on a reader that died before opening it
 for _ in $(seq 1 120); do # the first run may still be compiling the extension
   [ "$(descendants "$PIG_PID" | wc -l)" -ge 2 ] && break
   sleep 0.5
@@ -49,6 +49,11 @@ for pid in $(descendants "$PIG_PID"); do
   fi
 done
 exec 3>&-
+for _ in $(seq 1 60); do
+  kill -0 "$PIG_PID" 2>/dev/null || break
+  sleep 0.5
+done
+kill -0 "$PIG_PID" 2>/dev/null && fail "pig did not exit within 30 s of its stdin closing (see $LOGDIR/verify-idle.log)"
 wait "$PIG_PID" 2>/dev/null || true
 [ "$PROCS" -ge 2 ] || fail "expected pig and its extension runner, saw $PROCS process(es) (see $LOGDIR/verify-idle.log)"
 echo "3. idle footprint: $((TOTAL_KB / 1024)) MiB across $PROCS processes (pig + extension runner)$DETAIL"
