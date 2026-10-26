@@ -270,6 +270,31 @@ func TestOpenPreservesUnknownRecordsVerbatim(t *testing.T) {
 	}
 }
 
+func TestOpenKeepsForeignRecordsWithOtherFieldTypes(t *testing.T) {
+	s, claudeDir := newSession(t)
+	if err := os.MkdirAll(filepath.Dir(s.Path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	foreign := `{"type":"summary","uuid":7,"cwd":["x"],"version":{"v":1},"sessionId":null}`
+	user := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"` + s.ID() + `","cwd":"/work","message":{"role":"user","content":"x"}}`
+	if err := os.WriteFile(s.Path(), []byte(foreign+"\n"+user+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err := Open(s.ID(), s.cwd, claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs := o.Records(); len(recs) != 2 || string(recs[0]) != foreign {
+		t.Fatalf("records = %q", recs)
+	}
+	if err := o.AddUserMessage("next"); err != nil {
+		t.Fatal(err)
+	}
+	if m := parse(t, o.Records()[2]); m["parentUuid"] != "u1" || m["cwd"] != "/work" {
+		t.Fatalf("appended record did not chain to the user record: %v", m)
+	}
+}
+
 func TestOpenMissingFileErrors(t *testing.T) {
 	if _, err := Open("nope", t.TempDir(), t.TempDir()); err == nil {
 		t.Fatal("expected error")
@@ -322,6 +347,35 @@ func TestImportSplitsUserArray(t *testing.T) {
 	if c := content(4).([]any); len(c) != 1 || c[0].(map[string]any)["type"] != "text" {
 		t.Fatalf("remaining blocks record: %v", c)
 	}
+	requireChain(t, recs)
+}
+
+// requireChain checks that recs form one chain: a root, then each record parented to the one before.
+func requireChain(t *testing.T, recs []json.RawMessage) {
+	t.Helper()
+	var prev any
+	for i, r := range recs {
+		m := parse(t, r)
+		if m["parentUuid"] != prev {
+			t.Fatalf("record %d: parentUuid = %v, want %v", i, m["parentUuid"], prev)
+		}
+		prev = m["uuid"]
+	}
+}
+
+// recordKinds lists each record's type, with the attachment's own type after a colon.
+func recordKinds(t *testing.T, recs []json.RawMessage) []string {
+	t.Helper()
+	var kinds []string
+	for _, r := range recs {
+		m := parse(t, r)
+		k := m["type"].(string)
+		if k == "attachment" {
+			k += ":" + m["attachment"].(map[string]any)["type"].(string)
+		}
+		kinds = append(kinds, k)
+	}
+	return kinds
 }
 
 func TestImportPlacesAttachmentsAfterIndex(t *testing.T) {
@@ -338,16 +392,32 @@ func TestImportPlacesAttachmentsAfterIndex(t *testing.T) {
 	if err := s.ImportMessages(msgs, atts); err != nil {
 		t.Fatal(err)
 	}
-	var kinds []string
-	for _, r := range s.Records() {
-		m := parse(t, r)
-		k := m["type"].(string)
-		if k == "attachment" {
-			k += ":" + m["attachment"].(map[string]any)["type"].(string)
-		}
-		kinds = append(kinds, k)
-	}
-	if want := []string{"assistant", "attachment:a0", "user", "user", "attachment:a1"}; !reflect.DeepEqual(kinds, want) {
+	if kinds, want := recordKinds(t, s.Records()), []string{"assistant", "attachment:a0", "user", "user", "attachment:a1"}; !reflect.DeepEqual(kinds, want) {
 		t.Fatalf("records = %v, want %v", kinds, want)
 	}
+	requireChain(t, s.Records())
+}
+
+// As in the library, an attachment follows only a message that survives repair: one
+// placed after a dropped message is not emitted, and a synthesised message carries none.
+func TestImportAttachmentsAroundDroppedAndSynthesisedMessages(t *testing.T) {
+	s, _ := newSession(t)
+	msgs := []Message{
+		{Role: "user", Content: "q"},
+		{Role: "user", Content: []Block{ToolResultBlock{Type: "tool_result", ToolUseID: "ghost", Content: "x"}}}, // dropped
+		{Role: "assistant", Content: []Block{ToolUseBlock{Type: "tool_use", ID: "t1", Name: "X", Input: map[string]any{}}}},
+		{Role: "assistant", Content: "plain"}, // repair synthesises t1's result before it
+	}
+	atts := []ImportAttachment{
+		{AfterIndex: 1, Attachment: map[string]any{"type": "after-dropped"}},
+		{AfterIndex: 2, Attachment: map[string]any{"type": "a2"}},
+		{AfterIndex: 3, Attachment: map[string]any{"type": "a3"}},
+	}
+	if err := s.ImportMessages(msgs, atts); err != nil {
+		t.Fatal(err)
+	}
+	if kinds, want := recordKinds(t, s.Records()), []string{"user", "assistant", "attachment:a2", "user", "assistant", "attachment:a3"}; !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("records = %v, want %v", kinds, want)
+	}
+	requireChain(t, s.Records())
 }

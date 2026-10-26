@@ -5,6 +5,7 @@ package ccsession
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"unicode/utf16"
@@ -14,7 +15,9 @@ import (
 
 const maxSanitizedLength = 200
 
-// ClaudeDir returns override, else CLAUDE_CONFIG_DIR, else ~/.claude.
+// ClaudeDir returns override, else CLAUDE_CONFIG_DIR, else ~/.claude. An empty
+// CLAUDE_CONFIG_DIR counts as unset: the library's ?? would use it as a relative
+// path and scatter session files into the working directory.
 func ClaudeDir(override string) string {
 	if override != "" {
 		return override
@@ -22,7 +25,14 @@ func ClaudeDir(override string) string {
 	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
 		return dir
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// HOME is unset: Node's os.homedir() then reads the passwd entry.
+		// shortcut: without a passwd entry either the dir is relative where Node throws; return an error if a caller must tell.
+		if u, uerr := user.Current(); uerr == nil {
+			home = u.HomeDir
+		}
+	}
 	return filepath.Join(home, ".claude")
 }
 

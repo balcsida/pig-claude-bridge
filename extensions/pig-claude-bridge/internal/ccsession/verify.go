@@ -2,6 +2,7 @@ package ccsession
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -33,17 +34,30 @@ func VerifyWrittenSession(jsonlPath, expectedSessionID string, expectedRecordCou
 	if len(lines) == 0 { // the library parses lines[0] regardless and reports it as malformed
 		return []string{fmt.Sprintf("malformed JSONL — path=%s err=no records", jsonlPath)}
 	}
-	var first, last struct {
-		SessionID any `json:"sessionId"`
+	first, err := recordSessionID(lines[0])
+	var last any
+	if err == nil {
+		last, err = recordSessionID(lines[len(lines)-1])
 	}
-	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+	if err != nil {
 		return []string{fmt.Sprintf("malformed JSONL — path=%s err=%v", jsonlPath, err)}
 	}
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil {
-		return []string{fmt.Sprintf("malformed JSONL — path=%s err=%v", jsonlPath, err)}
-	}
-	if first.SessionID != expectedSessionID || last.SessionID != expectedSessionID {
-		return []string{fmt.Sprintf("sessionId drift — expected=%s first=%v last=%v", expectedSessionID, first.SessionID, last.SessionID)}
+	if first != expectedSessionID || last != expectedSessionID {
+		return []string{fmt.Sprintf("sessionId drift — expected=%s first=%v last=%v", expectedSessionID, first, last)}
 	}
 	return nil
+}
+
+// recordSessionID reads a record's sessionId as the TypeScript does: a null record
+// is malformed (reading its property throws), any other non-object has none.
+func recordSessionID(line string) (any, error) {
+	var rec any
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		return nil, err
+	}
+	if rec == nil {
+		return nil, errors.New("Cannot read properties of null (reading 'sessionId')")
+	}
+	fields, _ := rec.(map[string]any)
+	return fields["sessionId"], nil
 }

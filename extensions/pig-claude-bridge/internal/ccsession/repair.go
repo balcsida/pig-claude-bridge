@@ -1,5 +1,7 @@
 package ccsession
 
+import "slices"
+
 // Port of repairWithOrigin (cc-session-io chunk-7JUXR4CP.js:62-121).
 
 const (
@@ -38,8 +40,9 @@ func RepairWithOrigin(msgs []Message) (repaired []Message, origin []int) {
 		blocks, isArray := msg.Content.([]Block)
 		if msg.Role == "assistant" {
 			flushPending()
+			// Every string id counts, "" included, as in the library.
 			for _, b := range blocks {
-				if tu, ok := b.(ToolUseBlock); ok && tu.ID != "" && !contains(pending, tu.ID) {
+				if tu, ok := b.(ToolUseBlock); ok && !slices.Contains(pending, tu.ID) {
 					pending = append(pending, tu.ID)
 				}
 			}
@@ -68,7 +71,7 @@ func RepairWithOrigin(msgs []Message) (repaired []Message, origin []int) {
 			tr, ok := b.(ToolResultBlock)
 			if !ok {
 				kept = append(kept, b)
-			} else if contains(pending, tr.ToolUseID) {
+			} else if slices.Contains(pending, tr.ToolUseID) {
 				provided = append(provided, tr.ToolUseID)
 				kept = append(kept, b)
 			}
@@ -76,7 +79,7 @@ func RepairWithOrigin(msgs []Message) (repaired []Message, origin []int) {
 		if pending != nil {
 			var missing []Block
 			for _, id := range pending {
-				if !contains(provided, id) {
+				if !slices.Contains(provided, id) {
 					missing = append(missing, synthetic(id))
 				}
 			}
@@ -96,13 +99,4 @@ func RepairWithOrigin(msgs []Message) (repaired []Message, origin []int) {
 	}
 	flushPending()
 	return repaired, origin
-}
-
-func contains(set []string, id string) bool {
-	for _, s := range set {
-		if s == id {
-			return true
-		}
-	}
-	return false
 }

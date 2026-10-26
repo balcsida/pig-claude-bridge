@@ -103,16 +103,11 @@ func Create(o Options) (*Session, error) {
 	}, nil
 }
 
-// recordHead is the part of a stored record that Open and the chain check read.
+// recordHead is the part of a record the chain check reads.
 type recordHead struct {
-	Type       string  `json:"type"`
 	UUID       string  `json:"uuid"`
 	ParentUUID *string `json:"parentUuid"`
 	SessionID  string  `json:"sessionId"`
-	Cwd        string  `json:"cwd"`
-	Version    string  `json:"version"`
-	GitBranch  string  `json:"gitBranch"`
-	Slug       string  `json:"slug"`
 }
 
 // Open reads an existing session file. Records are kept verbatim; session
@@ -142,21 +137,25 @@ func Open(sessionID, projectPath, claudeDir string) (*Session, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		var head recordHead
-		if err := json.Unmarshal([]byte(line), &head); err != nil {
+		// Untyped, so a foreign record whose fields have other types is kept, as the library keeps it.
+		var rec any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, fmt.Errorf("ccsession: open: %s line %d: %w", path, i+1, err)
 		}
+		fields, _ := rec.(map[string]any)
+		field := func(k string) string { v, _ := fields[k].(string); return v }
 		s.records = append(s.records, RawRecord(line))
-		if !seenFirst && (head.Type == "user" || head.Type == "assistant") {
+		typ := field("type")
+		if !seenFirst && (typ == "user" || typ == "assistant") {
 			seenFirst = true
-			s.sessionID = orDefault(head.SessionID, s.sessionID)
-			s.slug = orDefault(head.Slug, s.slug)
-			s.cwd = orDefault(head.Cwd, s.cwd)
-			s.version = orDefault(head.Version, s.version)
-			s.gitBranch = orDefault(head.GitBranch, s.gitBranch)
+			s.sessionID = orDefault(field("sessionId"), s.sessionID)
+			s.slug = orDefault(field("slug"), s.slug)
+			s.cwd = orDefault(field("cwd"), s.cwd)
+			s.version = orDefault(field("version"), s.version)
+			s.gitBranch = orDefault(field("gitBranch"), s.gitBranch)
 		}
-		if head.Type == "user" || head.Type == "assistant" || head.Type == "attachment" {
-			uuid := head.UUID
+		if typ == "user" || typ == "assistant" || typ == "attachment" {
+			uuid := field("uuid")
 			s.lastUUID = &uuid
 		}
 	}
@@ -422,11 +421,12 @@ func generateSlug() (string, error) {
 // ImportMessages repairs msgs and adds them to the session, dispatching by
 // role and content type as the library's importMessages does. Each attachment
 // follows the record(s) of the message whose original index is AfterIndex;
-// out-of-range attachments are skipped, as the library does (it only warns).
+// out-of-range attachments are skipped, as the library does.
 func (s *Session) ImportMessages(msgs []Message, attachments []ImportAttachment) error {
 	repaired, origin := RepairWithOrigin(msgs)
 	following := map[int][]ImportAttachment{}
 	for _, a := range attachments {
+		// shortcut: the library's console.warn for a skipped attachment is dropped, since the extension may not write stderr; return the skipped ones if a caller needs to log them.
 		if a.AfterIndex >= 0 && a.AfterIndex < len(msgs) {
 			following[a.AfterIndex] = append(following[a.AfterIndex], a)
 		}

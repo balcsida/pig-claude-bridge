@@ -76,6 +76,19 @@ func TestRepairFirstMessageEmptied(t *testing.T) {
 	}
 }
 
+// The library pairs any string id, so an empty one is answered like any other.
+func TestRepairPairsEmptyToolUseIDs(t *testing.T) {
+	msgs := []Message{{Role: "assistant", Content: []Block{use("")}}, {Role: "user", Content: "next"}}
+	want := []Message{msgs[0], {Role: "user", Content: []Block{synth(""), TextBlock{Type: "text", Text: "next"}}}}
+	if got := RepairToolPairing(msgs); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v", got)
+	}
+	paired := []Message{msgs[0], {Role: "user", Content: []Block{res("")}}}
+	if got := RepairToolPairing(paired); !reflect.DeepEqual(got, paired) {
+		t.Fatalf("got %#v", got)
+	}
+}
+
 func TestRepairOriginMap(t *testing.T) {
 	msgs := []Message{
 		{Role: "user", Content: "q"},
