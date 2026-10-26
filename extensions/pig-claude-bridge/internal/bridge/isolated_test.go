@@ -353,3 +353,16 @@ func compact(t *testing.T, raw json.RawMessage) string {
 	}
 	return out.String()
 }
+
+func TestIsolatedStreamHonoursAnAbortWhileClaudeCodeStarts(t *testing.T) {
+	fake := newFakeClaude(t, "FAKECLAUDE_STALL_INIT=1")
+	h := newProviderHarness(t, func(d *Deps) { d.Spawn = fake.spawn })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := mustStream(h.b.IsolatedStream(ctx, h.host, testModel, isolatedContext, nil, "compact-summary", nil, nil))
+	fake.awaitLaunch(t)
+	cancel()
+	if reply := finalOf(t, stream); reply["stopReason"] != "aborted" {
+		t.Fatalf("reply = %v", reply)
+	}
+}

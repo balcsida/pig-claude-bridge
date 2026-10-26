@@ -153,3 +153,20 @@ func TestPromptAndWaitSkipsSkillsWhenReadIsBlocked(t *testing.T) {
 		t.Fatal("an unresolvable prompt did not fail a call that needs skills")
 	}
 }
+
+func TestPromptAndWaitHonoursAnAbortWhileClaudeCodeStarts(t *testing.T) {
+	fake := newFakeClaude(t, "FAKECLAUDE_STALL_INIT=1")
+	h := newProviderHarness(t, func(d *Deps) { d.Spawn = fake.spawn })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.b.PromptAndWait(ctx, h.host, AskRequest{Prompt: "q", AppendSkills: &noSkills})
+		done <- err
+	}()
+	fake.awaitLaunch(t)
+	cancel()
+	if err := receive(t, done, "PromptAndWait to return after the abort"); err == nil || err.Error() != "Aborted" {
+		t.Fatalf("err = %v", err)
+	}
+}

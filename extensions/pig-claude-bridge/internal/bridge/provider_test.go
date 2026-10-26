@@ -1080,3 +1080,23 @@ func TestTranscriptContextResolvesAgainstTheRecordedPrompt(t *testing.T) {
 		}
 	})
 }
+
+// TestStreamSimpleHonoursAnAbortWhileClaudeCodeStarts: Claude Code that never answers
+// initialize (user SessionStart hooks can take seconds) must not hold the turn past an abort.
+func TestStreamSimpleHonoursAnAbortWhileClaudeCodeStarts(t *testing.T) {
+	fake := newFakeClaude(t, "FAKECLAUDE_STALL_INIT=1")
+	h := newProviderHarness(t, func(d *Deps) { d.Spawn = fake.spawn })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	streams := make(chan *sdk.ModelEventStream, 1)
+	go func() { streams <- h.call(ctx, "pi-startup-abort", msgs(userMsg("hi"))) }()
+	fake.awaitLaunch(t)
+	cancel()
+	stream := receive(t, streams, "StreamSimple to return after the abort")
+	if reply := finalOf(t, stream); reply["stopReason"] != "aborted" || reply["errorMessage"] != "Operation aborted" {
+		t.Fatalf("reply = %v", reply)
+	}
+	if len(h.b.liveContexts()) != 0 {
+		t.Fatal("an aborted start-up left a live query behind")
+	}
+}

@@ -3,11 +3,13 @@
 package ccproto
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MinVersion is the oldest Claude Code CLI the bridge supports.
@@ -27,9 +29,20 @@ func ResolveExecutable(configured string) (string, error) {
 
 var semverRE = regexp.MustCompile(`^\s*(\d+\.\d+\.\d+)`)
 
+// VersionTimeout bounds `claude --version`: a binary that never answers must not hang the turn.
+var VersionTimeout = 10 * time.Second
+
 // Version runs `<exe> --version` and returns the leading semver ("2.1.310 (Claude Code)" gives "2.1.310").
 func Version(exe string) (string, error) {
-	out, err := exec.Command(exe, "--version").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), VersionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "--version")
+	// A grandchild can keep stdout open after the kill; stop waiting for it.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("run %s --version: no answer within %s", exe, VersionTimeout)
+	}
 	if err != nil {
 		return "", fmt.Errorf("run %s --version: %w", exe, err)
 	}

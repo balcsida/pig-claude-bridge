@@ -46,6 +46,15 @@ func errorStream(model map[string]any, message string) *sdk.ModelEventStream {
 	return stream
 }
 
+// abortedStream is a stream that ends its turn as aborted.
+func abortedStream(model map[string]any) *sdk.ModelEventStream {
+	stream := sdk.CreateAssistantMessageEventStream()
+	out := newAssistantOutput(model)
+	out["stopReason"], out["errorMessage"] = "aborted", "Operation aborted"
+	stream.Push(map[string]any{"type": "error", "reason": "aborted", "error": out})
+	return stream
+}
+
 // StreamSimple is the provider entry point. PiG calls it for each new prompt and
 // each tool result: either the result is delivered to the parked query that owns
 // it, or a fresh query starts. ctx is the call's cancellation (pi's abort signal).
@@ -344,10 +353,17 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		cliModel, len(messages), len(mcpTools), short(syncResult.SessionID), orDefault(effort), strictMcp, truncateRunes(promptText, 60))
 
 	// The query outlives this call, so its process runs on its own context; abort cancels it.
+	// Until the stream takes over below, the call's abort reaches the start-up too.
 	queryCtx, cancelQuery := context.WithCancel(context.Background())
+	stopStartupAbort := context.AfterFunc(ctx, cancelQuery)
 	client, err := b.deps.Spawn(queryCtx, opts, handlers)
+	stopStartupAbort()
 	if err != nil {
 		cancelQuery()
+		if ctx.Err() != nil {
+			b.debugf("provider: aborted while Claude Code started: %v", err)
+			return abortedStream(model)
+		}
 		return errorStream(model, fmt.Sprintf("start Claude Code: %v", err))
 	}
 
@@ -541,6 +557,9 @@ func (b *Bridge) clearRewriteMark(piSessionID string) {
 // first resolution, warns about a binary older than the supported minimum. A missing
 // binary fails the query, with a notice each time it is tried.
 func (b *Bridge) resolveExecutable(host Host) (string, error) {
+	// Single flight: concurrent first calls share one version probe.
+	b.resolveMu.Lock()
+	defer b.resolveMu.Unlock()
 	b.mu.Lock()
 	exe := b.executable
 	b.mu.Unlock()

@@ -121,10 +121,14 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 		Settings: settings, DebugFile: debugFile, AppendSystemPrompt: skillsBlock, ExtraArgs: extraArgs,
 		NoSessionPersistence: r.Isolated,
 	}
-	runCtx, cancelRun := context.WithCancel(context.Background())
+	// The process lives no longer than this call, so the call's abort also stops its start-up.
+	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 	client, err := b.deps.Spawn(runCtx, opts, ccproto.Handlers{OnStderr: onStderr})
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", errors.New("Aborted")
+		}
 		return "", fmt.Errorf("start Claude Code: %v", err)
 	}
 	var writer sync.WaitGroup

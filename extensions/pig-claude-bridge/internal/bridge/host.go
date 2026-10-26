@@ -67,6 +67,8 @@ type Bridge struct {
 	lastPromptOptions *promptOptions
 	// executable is the resolved Claude Code binary; "" until the first query resolves it.
 	executable string
+	// resolveMu serialises resolveExecutable; it is never taken under mu.
+	resolveMu sync.Mutex
 
 	// captures is the prompt-capture registry, guarded by its own mutex.
 	captures    *promptcapture.Captures

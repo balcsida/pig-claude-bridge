@@ -109,10 +109,20 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 		StrictMcpConfig: true, NoSessionPersistence: true,
 		Settings: map[string]any{"autoMemoryEnabled": false}, DebugFile: debugFile,
 	}
-	runCtx, cancelRun := context.WithCancel(context.Background())
+	aborted := func() map[string]any {
+		out := newAssistantOutput(model)
+		out["stopReason"], out["errorMessage"] = "aborted", "Operation aborted"
+		b.debugf("compact summary: aborted")
+		return map[string]any{"type": "error", "reason": "aborted", "error": out}
+	}
+	// The process lives no longer than this call, so the call's abort also stops its start-up.
+	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 	client, err := b.deps.Spawn(runCtx, opts, ccproto.Handlers{OnStderr: onStderr})
 	if err != nil {
+		if ctx.Err() != nil {
+			return aborted()
+		}
 		return fail(fmt.Sprintf("start Claude Code: %v", err))
 	}
 	var writer sync.WaitGroup
@@ -137,12 +147,6 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 		}
 	}()
 
-	aborted := func() map[string]any {
-		out := newAssistantOutput(model)
-		out["stopReason"], out["errorMessage"] = "aborted", "Operation aborted"
-		b.debugf("compact summary: aborted")
-		return map[string]any{"type": "error", "reason": "aborted", "error": out}
-	}
 	var assistantText, finalText, errorText string
 	gotResult := false
 	frames := client.Frames()

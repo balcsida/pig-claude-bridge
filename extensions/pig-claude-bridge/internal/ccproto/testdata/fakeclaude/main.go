@@ -9,7 +9,8 @@
 // (text written to stderr at startup), FAKECLAUDE_EXIT_CODE (exit code once stdin closes),
 // FAKECLAUDE_EXIT_BEFORE_INIT=1 (exit with that code right after the stderr text, before reading stdin),
 // FAKECLAUDE_STOP_READING=1 (stop reading stdin once initialize is read), FAKECLAUDE_GRANDCHILD=1 (start a
-// helper that inherits stdout and stderr and lingers for 3 s).
+// helper that inherits stdout and stderr and lingers for 3 s), FAKECLAUDE_STALL_INIT=1 (read initialize and never
+// answer it).
 package main
 
 import (
@@ -160,6 +161,9 @@ func main() {
 		}
 	}
 	id := <-initReq
+	if os.Getenv("FAKECLAUDE_STALL_INIT") == "1" {
+		time.Sleep(time.Hour)
+	}
 	if os.Getenv("FAKECLAUDE_MCP_BEFORE_INIT") == "1" {
 		emitJSON(map[string]any{"type": "control_request", "request_id": "m0", "request": map[string]any{
 			"subtype": "mcp_message", "server_name": "srv",

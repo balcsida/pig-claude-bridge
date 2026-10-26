@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveExecutableConfigured(t *testing.T) {
@@ -45,6 +46,24 @@ func TestVersionUnparsable(t *testing.T) {
 	}
 	if _, err := Version(exe); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestVersionStalledReturnsWithinTheTimeout(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := VersionTimeout
+	VersionTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { VersionTimeout = old })
+	start := time.Now()
+	_, err := Version(exe)
+	if err == nil || !strings.Contains(err.Error(), "no answer within") {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Version took %s", elapsed)
 	}
 }
 
