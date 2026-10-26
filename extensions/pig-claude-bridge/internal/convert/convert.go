@@ -5,6 +5,7 @@ package convert
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -128,6 +129,8 @@ func flatBlocks(content any) ([]flatBlock, bool) {
 			fromMap(m)
 		}
 	case []ccsession.Block:
+		// Only converted user messages arrive as ccsession blocks (PlaceCarriedAttachments),
+		// and those hold text, image and tool_result blocks.
 		out = []flatBlock{}
 		for _, b := range c {
 			switch b := b.(type) {
@@ -135,10 +138,6 @@ func flatBlocks(content any) ([]flatBlock, bool) {
 				out = append(out, flatBlock{Type: "text", Text: b.Text})
 			case ccsession.ImageBlock:
 				out = append(out, flatBlock{Type: "image", Data: b.Source.Data, MimeType: b.Source.MediaType})
-			case ccsession.ThinkingBlock:
-				out = append(out, flatBlock{Type: "thinking"})
-			case ccsession.ToolUseBlock:
-				out = append(out, flatBlock{Type: "tool_use"})
 			case ccsession.ToolResultBlock:
 				out = append(out, flatBlock{Type: "tool_result"})
 			}
@@ -214,12 +213,9 @@ type Dropped struct {
 }
 
 func (d *Dropped) addProvider(p string) {
-	for _, q := range d.Providers {
-		if q == p {
-			return
-		}
+	if !slices.Contains(d.Providers, p) {
+		d.Providers = append(d.Providers, p)
 	}
-	d.Providers = append(d.Providers, p)
 }
 
 // ConvertPiMessages converts a pi message array to Anthropic messages.
@@ -246,10 +242,18 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 		case "user":
 			anthropic = append(anthropic, ccsession.Message{Role: "user", Content: userContent(msg["content"])})
 		case "assistant":
-			content, _ := msg["content"].([]any)
+			var content []map[string]any
+			switch c := msg["content"].(type) {
+			case []map[string]any:
+				content = c
+			case []any:
+				for _, raw := range c {
+					block, _ := raw.(map[string]any)
+					content = append(content, block)
+				}
+			}
 			blocks := []ccsession.Block{}
-			for _, raw := range content {
-				block, _ := raw.(map[string]any)
+			for _, block := range content {
 				switch typ, _ := block["type"].(string); {
 				case typ == "text" && str(block["text"]) != "":
 					blocks = append(blocks, ccsession.TextBlock{Type: "text", Text: str(block["text"])})
@@ -261,9 +265,9 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 						blocks = append(blocks, ccsession.ThinkingBlock{Type: "thinking", Thinking: str(block["thinking"]), Signature: sig})
 					} else {
 						dropped.Thinking++
-						provider := str(msg["provider"])
-						if provider == "" {
-							provider = "unknown"
+						provider, ok := msg["provider"].(string)
+						if !ok {
+							provider = "unknown" // the TypeScript's ?? keeps ""
 						}
 						dropped.addProvider(provider)
 					}
