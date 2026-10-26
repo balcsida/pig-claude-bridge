@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -169,6 +170,30 @@ func TestPromptCaptures(t *testing.T) {
 		equal(t, diagnostics[0].SystemPrompt, "prefix-common-WHO-ARE-YOU", "diagnostic prompt")
 		equal(t, diagnostics[0].Matches[0].Key, "prefix-common-THE-REST", "closest key")
 		equal(t, diagnostics[0].Matches[0].FirstDivergent, 14, "divergence")
+	})
+
+	t.Run("calls the diagnostic callback outside the registry lock", func(t *testing.T) {
+		var c *Captures
+		c = NewCaptures(0, func(d Diagnostic) {
+			c.Record("recorded by the callback", Input{}, "")
+			c.Resolve(d.SystemPrompt)
+		})
+		done := make(chan error, 1)
+		go func() {
+			_, err := c.ResolveOrDerive("nothing like it")
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("want the no-capture error")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a callback that uses the registry deadlocked")
+		}
+		if _, ok := c.Resolve("recorded by the callback"); !ok {
+			t.Fatal("the callback's Record did not land")
+		}
 	})
 
 	t.Run("names pi#5581 when a prompt is a recorded key with its tail missing", func(t *testing.T) {
@@ -362,7 +387,7 @@ func TestPromptSections(t *testing.T) {
 		equal(t, project(t, c, "one empty section"), "<other>\nkept\n</other>", "projection")
 	})
 
-	t.Run("keeps the recorded sections when the caller mutates its own slice", func(t *testing.T) {
+	t.Run("keeps the recorded sections when the caller mutates its own map", func(t *testing.T) {
 		sections := []Section{{"mcp_servers", mcpContent}}
 		c := NewCaptures(0, nil)
 		c.Record("live options", Input{Sections: sections}, "")

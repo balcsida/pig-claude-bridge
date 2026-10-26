@@ -3,8 +3,10 @@
 package promptcapture
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -65,7 +67,9 @@ type InheritedPrompt struct {
 	Parent     *Capture
 }
 
-// Capture is one recorded prompt with its components.
+// Capture is one recorded prompt with its components. Record updates a node in
+// place under the registry's mutex, so read a resolved capture through
+// ProjectPromptCapture or CollectPromptSkills, which take it.
 type Capture struct {
 	Input
 	AssembledPrompt string
@@ -130,6 +134,8 @@ func (c *Captures) Record(systemPrompt string, in Input, source string) {
 	if capture == nil {
 		capture = &Capture{AssembledPrompt: systemPrompt, mu: &c.mu}
 	}
+	// The TypeScript also tells an unset custom from ""; both inherit nothing, so
+	// comparing strings changes no result.
 	customChanged := existing == nil || existing.Custom != in.Custom
 
 	capture.Custom = in.Custom
@@ -189,11 +195,20 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 	if systemPrompt == "" {
 		return nil, nil
 	}
+	capture, diagnostic, err := c.resolveOrDerive(systemPrompt)
+	if diagnostic != nil {
+		// Outside c.mu: the callback may do slow I/O, or resolve and project itself.
+		c.onDiagnose(*diagnostic)
+	}
+	return capture, err
+}
+
+func (c *Captures) resolveOrDerive(systemPrompt string) (*Capture, *Diagnostic, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if exact, ok := c.byKey[systemPrompt]; ok {
 		c.touch(systemPrompt, exact)
-		return exact, nil
+		return exact, nil, nil
 	}
 
 	// A capture outlives its lookup key: eviction drops the key while inheritance
@@ -201,7 +216,7 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 	for _, node := range c.reachableCaptures() {
 		if node.AssembledPrompt == systemPrompt {
 			c.touch(systemPrompt, node)
-			return node, nil
+			return node, nil, nil
 		}
 	}
 
@@ -211,7 +226,7 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 	embedded := c.findInheritedPrompts(systemPrompt, systemPrompt)
 	if len(embedded) == 0 {
 		matches := c.closestKnown(systemPrompt)
-		c.onDiagnose(Diagnostic{SystemPrompt: systemPrompt, Matches: matches})
+		diagnostic := &Diagnostic{SystemPrompt: systemPrompt, Matches: matches}
 		// A query that is a recorded key minus its tail is the signature of pi#5581:
 		// an extension-triggered idle turn skips before_agent_start.
 		for _, m := range matches {
@@ -220,7 +235,7 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 				if source == "" {
 					source = "an unknown boundary"
 				}
-				return nil, fmt.Errorf("prompt-capture: this %d-char prompt is the %d-char capture recorded at "+
+				return nil, diagnostic, fmt.Errorf("prompt-capture: this %d-char prompt is the %d-char capture recorded at "+
 					"%s with its final %d chars missing. "+
 					"That shape matches pi#5581: an extension-triggered idle turn (sendMessage with triggerTurn) skips before_agent_start, "+
 					"so the prompt lacks that turn's extension additions. The turn fails; the next user-typed turn resolves normally. "+
@@ -236,7 +251,7 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 				recorded = ", last recorded at " + matches[0].Source
 			}
 		}
-		return nil, fmt.Errorf("prompt-capture: no capture for this %d-char system prompt, and it embeds none of the %d known. "+
+		return nil, diagnostic, fmt.Errorf("prompt-capture: no capture for this %d-char system prompt, and it embeds none of the %d known. "+
 			"Closest known match diverges at offset %s (%d-char key%s). "+
 			"Claude Code would receive none of this turn's context files, skills or custom instructions. "+
 			"When the divergence sits at a section's opening tag, the capture and this prompt disagree about that section — "+
@@ -249,7 +264,7 @@ func (c *Captures) ResolveOrDerive(systemPrompt string) (*Capture, error) {
 
 	// Custom is the prompt itself and the edges keep their original offsets, so
 	// projectCustom substitutes the embedded captures in place.
-	return &Capture{AssembledPrompt: systemPrompt, Input: Input{Custom: systemPrompt}, Inherited: embedded, mu: &c.mu}, nil
+	return &Capture{AssembledPrompt: systemPrompt, Input: Input{Custom: systemPrompt}, Inherited: embedded, mu: &c.mu}, nil, nil
 }
 
 // closestKnown returns the longest shared-prefix matches, best first.
@@ -303,11 +318,8 @@ func (c *Captures) findInheritedPrompts(systemPrompt, custom string) []Inherited
 
 	// A grandchild contains both its parent's key and the grandparent key nested
 	// inside it. Keep the longest exact non-overlapping matches.
-	sortStable(candidates, func(a, b candidate) bool {
-		if a.length != b.length {
-			return a.length > b.length
-		}
-		return a.Start < b.Start
+	slices.SortStableFunc(candidates, func(a, b candidate) int {
+		return cmp.Or(cmp.Compare(b.length, a.length), cmp.Compare(a.Start, b.Start))
 	})
 	var selected []InheritedPrompt
 	for _, cand := range candidates {
@@ -322,7 +334,7 @@ func (c *Captures) findInheritedPrompts(systemPrompt, custom string) []Inherited
 			selected = append(selected, cand.InheritedPrompt)
 		}
 	}
-	sortStable(selected, func(a, b InheritedPrompt) bool { return a.Start < b.Start })
+	slices.SortStableFunc(selected, func(a, b InheritedPrompt) int { return cmp.Compare(a.Start, b.Start) })
 	return selected
 }
 
@@ -345,15 +357,6 @@ func (c *Captures) reachableCaptures() []*Capture {
 		visit(c.byKey[key])
 	}
 	return result
-}
-
-// sortStable is an insertion sort: candidate lists are tiny and it is stable.
-func sortStable[T any](s []T, less func(a, b T) bool) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && less(s[j], s[j-1]); j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
 
 // CollectPromptSkills returns the skills visible through inherited prompts,
