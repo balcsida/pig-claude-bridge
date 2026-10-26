@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccproto"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/promptcapture"
 )
 
@@ -197,9 +198,11 @@ func (b *Bridge) historyRewrittenBy(host Host, event string) {
 	b.forgetSummarySession(id)
 }
 
-// OnSessionShutdown ends a pi session: its cwd, its sync lock and every mirror go.
+// OnSessionShutdown ends a pi session: its cwd, its sync lock and every mirror go,
+// and every Claude Code child this process started is killed, even when the host fails.
 func (b *Bridge) OnSessionShutdown(host Host) {
 	defer b.recoverHandler("session_shutdown")
+	defer b.killLiveQueries()
 	id := b.hostSessionID(host, "session_shutdown")
 	b.forgetSessionCwd(id)
 	b.mu.Lock()
@@ -207,6 +210,21 @@ func (b *Bridge) OnSessionShutdown(host Host) {
 	b.mu.Unlock()
 	b.reportLeaks("session_shutdown")
 	b.clearSessions("session_shutdown")
+}
+
+// killLiveQueries aborts every live query, then kills every Claude Code child still
+// running (the SDK's killAll): one parked at a tool call does not exit when its stdin
+// ends and keeps calling the API.
+func (b *Bridge) killLiveQueries() {
+	for _, q := range b.liveContexts() {
+		q.mu.Lock()
+		abort := q.abort
+		q.mu.Unlock()
+		if abort != nil {
+			abort()
+		}
+	}
+	ccproto.Shutdown()
 }
 
 // clearSessions drops every mirror: children never emit session_shutdown (only

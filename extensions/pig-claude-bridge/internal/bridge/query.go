@@ -65,6 +65,8 @@ type QueryContext struct {
 	// bindRunSignal binds a later run's cancellation to this query; ctx is nil-safe
 	// (the TypeScript signal may be undefined).
 	bindRunSignal func(ctx context.Context, runStream *sdk.ModelEventStream)
+	// abort ends the query as an abort does; nil until the query has started.
+	abort func()
 	// rateLimitRejection is nil when none was seen.
 	rateLimitRejection *rateLimitRejection
 	// lastRateLimitWarnStep is the highest 5% utilization bucket notified; nil

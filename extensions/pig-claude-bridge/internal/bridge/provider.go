@@ -398,6 +398,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	bind, unbind := b.newRunBinder(q, ctx, onAbort)
 	q.mu.Lock()
 	q.bindRunSignal = bind
+	q.abort = onAbort
 	q.mu.Unlock()
 
 	complete := func(res consumeResult) { b.completeQuery(q, client, syncResult, cwd, len(messages), res) }

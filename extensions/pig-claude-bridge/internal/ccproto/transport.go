@@ -52,7 +52,8 @@ var (
 	tracked   = map[*Process]struct{}{}
 )
 
-// Shutdown kills every child still running; the extension calls it on exit.
+// Shutdown kills every child still running. The bridge calls it from session_shutdown, which PiG
+// sends before the extension process goes away.
 func Shutdown() {
 	trackedMu.Lock()
 	defer trackedMu.Unlock()

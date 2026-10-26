@@ -17,7 +17,7 @@ import (
 // Limit: between turns this bridge keeps no Claude Code alive (as the TypeScript bridge), so the snapshot
 // normally holds only the old runner and the orphan check passes vacuously; the log line below says which.
 // It can only catch a claude that was in the snapshot. The leak-on-replacement class is covered by the
-// shutdown test of part 25c.
+// shutdown test of part 25c and, with a tool call parked, by TestIntSessionNewMidTurn.
 func TestIntSessionNew(t *testing.T) {
 	const timeout = 180 * time.Second
 	h := New(t, Options{

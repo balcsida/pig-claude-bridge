@@ -14,6 +14,7 @@ import (
 // fakeClaude runs ccproto's fake Claude Code (internal/ccproto/testdata/fakeclaude) in
 // place of the configured binary, so a test drives the real transport.
 type fakeClaude struct {
+	t        *testing.T
 	bin, out string
 	knobs    []string
 	started  chan *ccproto.Process
@@ -22,7 +23,7 @@ type fakeClaude struct {
 // newFakeClaude builds the fake; knobs are its FAKECLAUDE_* settings.
 func newFakeClaude(t *testing.T, knobs ...string) *fakeClaude {
 	t.Helper()
-	f := &fakeClaude{bin: filepath.Join(t.TempDir(), "fakeclaude"), out: t.TempDir(), knobs: knobs, started: make(chan *ccproto.Process, 8)}
+	f := &fakeClaude{t: t, bin: filepath.Join(t.TempDir(), "fakeclaude"), out: t.TempDir(), knobs: knobs, started: make(chan *ccproto.Process, 8)}
 	if out, err := exec.Command("go", "build", "-o", f.bin, "../ccproto/testdata/fakeclaude").CombinedOutput(); err != nil {
 		t.Fatalf("build fakeclaude: %v\n%s", err, out)
 	}
@@ -37,6 +38,7 @@ func (f *fakeClaude) spawn(ctx context.Context, o ccproto.Options, h ccproto.Han
 	if err != nil {
 		return nil, err
 	}
+	f.t.Cleanup(func() { _ = p.Close(context.Background()) })
 	f.started <- p
 	return p, nil
 }

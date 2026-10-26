@@ -607,3 +607,24 @@ func (explodingHost) Cwd() string                   { panic("boom") }
 func (explodingHost) AgentDir() string              { panic("boom") }
 func (explodingHost) ConfigDirName() string         { panic("boom") }
 func (explodingHost) SystemPrompt() (string, error) { panic("boom") }
+
+// Claude Code parked at a tool call does not exit when its stdin ends (it keeps
+// calling the API), so session_shutdown must kill it. The fake ignores SIGTERM too:
+// only the kill on shutdown ends it within the wait.
+func TestSessionShutdownKillsLiveClaudeCodeChildren(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "park.jsonl")
+	if err := os.WriteFile(script, []byte(`{"type":"system","subtype":"init","session_id":"cc-shutdown"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeClaude(t, "FAKECLAUDE_SCRIPT="+script, "FAKECLAUDE_HOLD=1", "FAKECLAUDE_IGNORE_TERM=1")
+	h := newProviderHarness(t, func(d *Deps) { d.Spawn = fake.spawn })
+	h.host.sessionID = "pi-shutdown"
+	stream := h.call(context.Background(), "pi-shutdown", msgs(userMsg("hi")))
+	p := receive(t, fake.started, "Claude Code to start")
+	h.liveFor("pi-shutdown")
+	h.b.OnSessionShutdown(h.host)
+	gone(t, p)
+	if reply := finalOf(t, stream); reply["stopReason"] != "aborted" {
+		t.Fatalf("reply = %v", reply)
+	}
+}
