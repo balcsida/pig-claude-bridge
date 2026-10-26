@@ -395,7 +395,7 @@ func (p *Process) readStderr(r io.Reader) {
 }
 
 // forwardStderr hands chunk to the consumer; a panic there is dropped so the reader keeps draining stderr.
-// It goes unlogged: ccproto has no log of its own, and the bridge's consumer is its debug log.
+// ccproto has no log of its own: the bridge's consumer recovers and logs its own panics first.
 func (p *Process) forwardStderr(chunk string) {
 	if p.handlers.OnStderr == nil {
 		return
