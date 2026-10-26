@@ -30,32 +30,47 @@ func TestIntToolMessage(t *testing.T) {
 	h.StartAndWait(0)
 	cwd := h.opts.Cwd
 
+	sessionDir := claudeProjectDir(t, cwd)
+
 	// The debug log accumulates across subtests (one pig process), so scope assertions to the bytes a single
 	// subtest wrote.
-	logMark := func() int {
+	logMark := func(fail func(string, ...any)) int {
 		info, err := os.Stat(h.DebugLog)
 		if err != nil {
-			failWithLogs(t, h, "%v", err)
+			fail("%v", err)
 		}
 		return int(info.Size())
 	}
-	logSince := func(mark int) string { return readDebugLog(t, h)[mark:] }
+	logSince := func(fail func(string, ...any), mark int) string {
+		b, err := os.ReadFile(h.DebugLog)
+		if err != nil {
+			fail("%v", err)
+		}
+		return string(b)[mark:]
+	}
 
 	// test runs body with the given timeout (a test-level bound as in node:test). The body runs in its own
-	// goroutine so a hang fails the subtest instead of the whole run; fail ends the body.
+	// goroutine so a hang fails the subtest instead of the whole run; fail ends the body. The body never touches
+	// a testing.T: its failure comes back over a channel, so a body still running after its subtest timed out
+	// cannot report into a finished test.
 	test := func(name string, timeout time.Duration, body func(fail func(format string, args ...any))) {
 		t.Run(name, func(t *testing.T) {
+			failed := make(chan string, 1)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				fail := func(format string, args ...any) {
-					t.Errorf("%s\n  RPC log:    %s\n  Debug log:  %s", fmt.Sprintf(format, args...), h.RPCLog, h.DebugLog)
+				body(func(format string, args ...any) {
+					failed <- fmt.Sprintf(format, args...)
 					runtime.Goexit()
-				}
-				body(fail)
+				})
 			}()
 			select {
 			case <-done:
+				select {
+				case msg := <-failed:
+					t.Errorf("%s\n  RPC log:    %s\n  Debug log:  %s", msg, h.RPCLog, h.DebugLog)
+				default:
+				}
 			case <-time.After(timeout):
 				t.Errorf("test timed out after %s\n  RPC log:    %s\n  Debug log:  %s", timeout, h.RPCLog, h.DebugLog)
 			}
@@ -89,7 +104,9 @@ func TestIntToolMessage(t *testing.T) {
 	textDelta := func(m Event) bool {
 		return m["type"] == "message_update" && asMap(m["assistantMessageEvent"])["type"] == "text_delta"
 	}
-	records := func(log string) []map[string]any { return sessionRecordsFrom(t, h, cwd, log) }
+	records := func(fail func(string, ...any), log string) []map[string]any {
+		return sessionRecordsFrom(fail, sessionDir, log)
+	}
 	// mentions mirrors the TypeScript check: the token appears in the record's attachment or message content.
 	mentions := func(r map[string]any, token string) bool {
 		return strings.Contains(jsonString(r["attachment"]), token) || strings.Contains(jsonString(asMap(r["message"])["content"]), token)
@@ -133,7 +150,7 @@ func TestIntToolMessage(t *testing.T) {
 
 	test("parallel tool calls with steer delivers all results", testTimeout, func(fail func(string, ...any)) {
 		collector := h.CollectText()
-		mark := logMark()
+		mark := logMark(fail)
 		prompt(fail, "Call SlowTool three times in parallel: seconds=3, seconds=4, seconds=5. Then list all three results.", "")
 		// Wait for at least one tool to start, then inject steer
 		waitEvent(fail, "tool_execution_start")
@@ -150,7 +167,7 @@ func TestIntToolMessage(t *testing.T) {
 		// <system-reminder> inside the tool_result content, which its own guidance tells the model to distrust),
 		// so assert the transport fact: the steer reached CC's session at all.
 		found := false
-		for _, r := range records(logSince(mark)) {
+		for _, r := range records(fail, logSince(fail, mark)) {
 			found = found || mentions(r, "PAPAYA")
 		}
 		if !found {
@@ -179,7 +196,7 @@ func TestIntToolMessage(t *testing.T) {
 		// Bug: when a steer arrives during tool execution, pi drains it at the turn boundary and injects it into
 		// context alongside the tool result. The bridge sees activeQuery=true, enters tool-result-delivery mode,
 		// extracts the tool result, but silently ignores the trailing user message (the steer).
-		mark := logMark()
+		mark := logMark(fail)
 		prompt(fail, "Call SlowTool with seconds=2. After it returns, repeat exactly what it returned.", "")
 		waitEvent(fail, "tool_execution_start")
 		prompt(fail, "IMPORTANT: Also say the exact word 'MANGO' on its own line in your response.", "steer")
@@ -187,7 +204,7 @@ func TestIntToolMessage(t *testing.T) {
 		// Structural assert: the steer must reach CC's session. Model echo is not assertable on CC 2.1.280
 		// (the steer arrives as a <system-reminder> inside the tool_result content).
 		found := false
-		for _, r := range records(logSince(mark)) {
+		for _, r := range records(fail, logSince(fail, mark)) {
 			found = found || mentions(r, "MANGO")
 		}
 		if !found {
@@ -201,14 +218,14 @@ func TestIntToolMessage(t *testing.T) {
 		// `queued_command` attachment sitting between the tool result and the next assistant message. A steer
 		// that lost the stdin race lands after that assistant message, and a replayed one is a plain user
 		// prompt with no attachment at all.
-		mark := logMark()
+		mark := logMark(fail)
 		steerText := "STOP. Do not call SlowTool again. Reply with only the word BANANA."
 		prompt(fail, "Call SlowTool with seconds=1 exactly 12 times, strictly one at a time — wait for each result before starting the next. Do not call it twice in the same message.", "")
 		waitEvent(fail, "tool_execution_start")
 		prompt(fail, steerText, "steer")
 		waitEvent(fail, "agent_end")
 
-		recs := records(logSince(mark))
+		recs := records(fail, logSince(fail, mark))
 		steerAt := -1
 		for i, r := range recs {
 			att := asMap(r["attachment"])
@@ -256,7 +273,7 @@ func TestIntToolMessage(t *testing.T) {
 		// reentrant user query. It cannot be pushed into the previous query: there is no tool boundary to steer
 		// at, and that query's input generator has already been ended. This asserts only that no push is
 		// attempted; read it as a tripwire against a future change that starts pushing text-only steers.
-		mark := logMark()
+		mark := logMark(fail)
 		collector := h.CollectText()
 		prompt(fail, "Write exactly 12 short numbered sentences about the history of computing. Do NOT call any tools.", "")
 		_, err := h.WaitForMatch(textDelta, "text_delta during assistant response", testTimeout)
@@ -264,7 +281,7 @@ func TestIntToolMessage(t *testing.T) {
 		prompt(fail, "After you finish, also say the exact word 'KIWI' on its own line.", "steer")
 		waitEvent(fail, "agent_end")
 		text := collector()
-		log := logSince(mark)
+		log := logSince(fail, mark)
 
 		if !strings.Contains(strings.ToLower(text), "kiwi") {
 			fail("no `kiwi` in: %s", head(text, 300))

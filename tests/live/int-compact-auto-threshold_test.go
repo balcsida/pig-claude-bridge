@@ -29,14 +29,10 @@ func TestIntCompactAutoThreshold(t *testing.T) {
 		Cwd:            projectDir(t),
 		DefaultTimeout: testTimeout,
 	})
+	logDebugTailOnFailure(t, h, 4000)
 	h.StartAndWait(0)
 
-	check := func(condition bool, format string, args ...any) {
-		t.Helper()
-		if !condition {
-			failWithLogs(t, h, format, args...)
-		}
-	}
+	check, prompt := checker(t, h), prompter(t, h, testTimeout)
 	assertReadFile := func(details map[string]any, suffix string) {
 		t.Helper()
 		readFiles, ok := details["readFiles"].([]any)
@@ -50,17 +46,11 @@ func TestIntCompactAutoThreshold(t *testing.T) {
 	}
 
 	t.Log("Seed turn A: force file A read while auto-compaction is disabled...")
-	seedA, err := h.PromptAndWait(`Use the read tool to read tests/fixtures/compact-file-a.txt. Then reply with exactly "read-a-ok".`, testTimeout)
-	if err != nil {
-		failWithLogs(t, h, "%v", err)
-	}
+	seedA := prompt(`Use the read tool to read tests/fixtures/compact-file-a.txt. Then reply with exactly "read-a-ok".`)
 	check(regexp.MustCompile(`(?i)read-a-ok`).MatchString(seedA), "seed A did not confirm read. Got: %s", head(seedA, 200))
 
 	t.Log("Seed turn B: force file B read and a larger assistant response...")
-	seedB, err := h.PromptAndWait(`Use the read tool to read tests/fixtures/compact-file-b.txt. Do not write or edit files. Then reply in chat with 120 numbered lines about European capital cities. Include the exact phrase "AUTO-COMPACT-SPLIT-SEED" on line 60.`, testTimeout)
-	if err != nil {
-		failWithLogs(t, h, "%v", err)
-	}
+	seedB := prompt(`Use the read tool to read tests/fixtures/compact-file-b.txt. Do not write or edit files. Then reply in chat with 120 numbered lines about European capital cities. Include the exact phrase "AUTO-COMPACT-SPLIT-SEED" on line 60.`)
 	check(strings.Contains(seedB, "AUTO-COMPACT-SPLIT-SEED"), "seed B did not include split seed marker. Got tail: %s", tail(seedB, 500))
 
 	var mu sync.Mutex

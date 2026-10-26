@@ -3,7 +3,6 @@
 package live
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -64,8 +63,8 @@ func TestIntServedWindow(t *testing.T) {
 	servedN, _ := strconv.Atoi(servedRe.FindStringSubmatch(line)[1])
 	registeredN, _ := strconv.Atoi(registeredRe.FindStringSubmatch(line)[1])
 	if servedN != registeredN {
-		failWithLogs(t, h, "%s", fmt.Sprintf("served contextWindow (%d) != registered (%d); pi's compaction threshold is out of sync with the CC window.\n  %s",
-			servedN, registeredN, strings.TrimSpace(line)))
+		failWithLogs(t, h, "served contextWindow (%d) != registered (%d); pi's compaction threshold is out of sync with the CC window.\n  %s",
+			servedN, registeredN, strings.TrimSpace(line))
 	}
 	t.Log("PASS")
 }

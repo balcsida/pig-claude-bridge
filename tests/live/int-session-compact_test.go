@@ -21,12 +21,7 @@ func TestIntSessionCompact(t *testing.T) {
 		DefaultTimeout: timeout,
 	})
 	h.StartAndWait(0)
-	prompt := func(msg string) {
-		t.Helper()
-		if _, err := h.PromptAndWait(msg, timeout); err != nil {
-			failWithLogs(t, h, "%v", err)
-		}
-	}
+	prompt := prompter(t, h, timeout)
 
 	// A few substantive turns so pi has something to compact.
 	t.Log("Turn 1: seed history...")

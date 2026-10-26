@@ -51,6 +51,8 @@ func TestIntCompactMidturnRebuild(t *testing.T) {
 		for length < bigFileBytes {
 			words := make([]string, 12)
 			for i := range words {
+				// Exact in int64, where the TypeScript's float64 product drops low bits, so the words differ from
+				// its fixture's; only their incompressibility matters.
 				rnd = (rnd*1103515245 + 12345) & 0x7fffffff
 				words[i] = strconv.FormatInt(rnd, 36)
 			}
@@ -131,18 +133,10 @@ func TestIntCompactMidturnRebuild(t *testing.T) {
 		DefaultTimeout: testTimeout,
 	})
 	h.StartAndWait(0)
-	check := func(condition bool, format string, args ...any) {
-		t.Helper()
-		if !condition {
-			failWithLogs(t, h, format, args...)
-		}
-	}
+	check := checker(t, h)
 
 	t.Log("Seed: read two large files with auto-compaction off...")
-	seed, err := h.PromptAndWait(fmt.Sprintf("Use the read tool to read %s and then %s, one at a time. Then reply with exactly \"seed-ok\" and nothing else.", bigA, bigB), testTimeout)
-	if err != nil {
-		failWithLogs(t, h, "%v", err)
-	}
+	seed := prompter(t, h, testTimeout)(fmt.Sprintf("Use the read tool to read %s and then %s, one at a time. Then reply with exactly \"seed-ok\" and nothing else.", bigA, bigB))
 	check(regexp.MustCompile(`(?i)seed-ok`).MatchString(seed), "seed turn did not confirm the reads. Got: %s", head(seed, 300))
 	seededTokens := maxOf(usageTokens(readDebugLog(t, h)))
 	t.Logf("  seeded context: %d prompt tokens (threshold %d)", seededTokens, threshold)

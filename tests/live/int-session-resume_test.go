@@ -5,7 +5,6 @@ package live
 import (
 	"fmt"
 	"math/rand"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,10 +16,7 @@ import (
 // tests/int-session-resume.mjs). Needs the alternative provider from the environment only.
 // AskClaude is enabled through <agent dir>/claude-bridge.json, in a per-test agent dir so no other test sees it.
 func TestIntSessionResume(t *testing.T) {
-	otherProvider, otherModel := os.Getenv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER"), os.Getenv("CLAUDE_BRIDGE_TESTING_ALT_MODEL")
-	if otherProvider == "" || otherModel == "" {
-		t.Skip("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER / CLAUDE_BRIDGE_TESTING_ALT_MODEL unset")
-	}
+	otherProvider, otherModel := altProviderModel(t)
 	const (
 		timeout     = 180 * time.Second
 		bridgeModel = "claude-bridge/claude-haiku-4-5"

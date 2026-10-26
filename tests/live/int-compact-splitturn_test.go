@@ -24,14 +24,7 @@ func TestIntCompactSplitturn(t *testing.T) {
 		DefaultTimeout: testTimeout,
 	})
 	h.StartAndWait(0)
-	prompt := func(msg string) string {
-		t.Helper()
-		text, err := h.PromptAndWait(msg, testTimeout)
-		if err != nil {
-			failWithLogs(t, h, "%v", err)
-		}
-		return text
-	}
+	prompt := prompter(t, h, testTimeout)
 
 	// Two substantive turns so messagesToSummarize and turnPrefixMessages are both non-empty.
 	t.Log("Seed: two substantive turns...")

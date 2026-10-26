@@ -23,7 +23,9 @@ func TestIntCompactSecondCompact(t *testing.T) {
 		Cwd:            projectDir(t),
 		DefaultTimeout: timeout,
 	})
+	logDebugTailOnFailure(t, h, 3000)
 	h.StartAndWait(0)
+	prompt := prompter(t, h, timeout)
 
 	assertMentions := func(summary, file string) {
 		t.Helper()
@@ -33,12 +35,8 @@ func TestIntCompactSecondCompact(t *testing.T) {
 	}
 	forceDiscardableHistory := func(file, marker string) {
 		t.Helper()
-		if _, err := h.PromptAndWait(fmt.Sprintf("Use the read tool to read %s. Then reply with exactly '%s'.", file, marker), timeout); err != nil {
-			failWithLogs(t, h, "%v", err)
-		}
-		if _, err := h.PromptAndWait("List 15 European capital cities, one per line, numbered. Nothing else.", timeout); err != nil {
-			failWithLogs(t, h, "%v", err)
-		}
+		prompt(fmt.Sprintf("Use the read tool to read %s. Then reply with exactly '%s'.", file, marker))
+		prompt("List 15 European capital cities, one per line, numbered. Nothing else.")
 	}
 	compact := func(which string) string {
 		t.Helper()
