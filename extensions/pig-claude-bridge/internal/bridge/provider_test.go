@@ -224,6 +224,21 @@ func answers(id, text string) func(*spawn) {
 	}
 }
 
+// answersPrompt is answers that waits for the prompt, as Claude Code does. A test that
+// reads the prompt needs it: a process that answers and exits first can end the query
+// before the writer gets to the prompt, and then nothing is ever written.
+func answersPrompt(id, text string) func(*spawn) {
+	return func(s *spawn) {
+		var once sync.Once
+		s.client.mu.Lock()
+		s.client.onWrite = func(ccproto.UserMessage) error {
+			once.Do(func() { answers(id, text)(s) })
+			return nil
+		}
+		s.client.mu.Unlock()
+	}
+}
+
 // parksOnTool is a script: init, then a tool call the caller completes later.
 func parksOnTool(id, toolCallID string) func(*spawn) {
 	return func(s *spawn) {
@@ -524,7 +539,7 @@ func TestOrphanResultThroughTheProvider(t *testing.T) {
 
 	t.Run("after a restart, starts a fresh query that answers the turn", func(t *testing.T) {
 		h := newProviderHarness(t, nil)
-		h.script(answers("cc-resumed", "answer after restart"))
+		h.script(answersPrompt("cc-resumed", "answer after restart"))
 		reply := finalOf(t, h.call(context.Background(), "pi-restarted", msgs(userMsg("read a"), toolCallMsg("toolu_1"), toolResultMsg("toolu_1"))))
 		if len(h.spawns()) != 1 {
 			t.Fatalf("spawns = %d, the result carries the turn into a fresh query", len(h.spawns()))
@@ -540,7 +555,7 @@ func TestOrphanResultThroughTheProvider(t *testing.T) {
 	t.Run("after compaction rewrote the history, tells Claude Code its context was compacted", func(t *testing.T) {
 		h := newProviderHarness(t, nil)
 		h.b.markRebuildForSession("pi-compacted", "session_compact:overflow")
-		h.script(answers("cc-rebuilt", "continued"))
+		h.script(answersPrompt("cc-rebuilt", "continued"))
 		finalOf(t, h.call(context.Background(), "pi-compacted", msgs(userMsg("read a"), toolCallMsg("toolu_7"), toolResultMsg("toolu_7"))))
 		if len(h.spawns()) != 1 {
 			t.Fatalf("spawns = %d", len(h.spawns()))
@@ -1064,7 +1079,7 @@ func TestTranscriptContextResolvesAgainstTheRecordedPrompt(t *testing.T) {
 		h := newProviderHarness(t, nil)
 		h.host.setPrompt("P\n\nT\n\n/w")
 		h.b.OnAgentStart(h.host)
-		h.script(answers("cc-transcript", "ok"))
+		h.script(answersPrompt("cc-transcript", "ok"))
 		stream, _ := h.b.StreamSimple(context.Background(), h.host, testModel, map[string]any{"messages": transcript(sections)}, map[string]any{"sessionId": "pi-transcript"})
 		reply := finalOf(t, stream)
 		if len(h.spawns()) != 1 {
