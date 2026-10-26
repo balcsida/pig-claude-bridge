@@ -16,6 +16,8 @@ import (
 type PendingToolCall struct {
 	ToolName string
 	Resolve  func(convert.McpResult)
+	// reply identifies the handler call that registered the entry.
+	reply chan convert.McpResult
 }
 
 // rateLimitRejection is the last rejection seen on a query: Claude Code sends it
@@ -79,6 +81,9 @@ type QueryContext struct {
 	// missedSteer: a steer never reached CC; completion must carry this into the
 	// mirror it creates.
 	missedSteer bool
+	// abandoned: discardRewrittenQuery killed this query; its end must not touch the
+	// session or the stream its replacement owns.
+	abandoned bool
 
 	// Per-turn (reset together by resetTurnState).
 	turnOutput          map[string]any
