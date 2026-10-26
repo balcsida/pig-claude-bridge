@@ -1596,3 +1596,18 @@ func TestKillClientContainsPanics(t *testing.T) {
 			strings.Contains(log, "killClient close: recovered from panic: close exploded")
 	})
 }
+
+// An exited process and an abort both ready: the abort wins every time, as in the TypeScript.
+func TestAwaitExitPrefersTheAbort(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	fc := newFakeClient()
+	fc.exit(1, "boom")
+	<-fc.Done()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 100 {
+		if err := b.awaitExit(ctx, fc); err != nil {
+			t.Fatalf("awaitExit = %v, want the abort", err)
+		}
+	}
+}

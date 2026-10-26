@@ -82,10 +82,11 @@ func TestIsolatedEffort(t *testing.T) {
 
 // --- unit-summary-cwd.mjs (the cwd attribution) ---
 
-// The TypeScript runs two real pi sessions at once and keys the pending summary by
-// AbortSignal; Go has no such identity (divergence D7), so the most recent pending
-// summary owns the call. The adaptation runs each session's operation in turn and
-// asserts every call ran in its owning session's cwd.
+// The TypeScript runs two real pi sessions at once ("concurrent native ... queries use
+// their owning session's cwd") and keys the pending summary by AbortSignal; Go has no
+// such identity (divergence D7), so the most recent pending summary owns the call. The
+// adaptation runs each session's operation in turn, which proves attribution only while
+// operations do not overlap; an overlapping pair goes to the later one, pinned below.
 func TestIsolatedSummaryCwd(t *testing.T) {
 	for _, operation := range []string{"compaction", "branch summary"} {
 		t.Run("native "+operation+" queries use their owning session's cwd", func(t *testing.T) {
@@ -121,6 +122,21 @@ func TestIsolatedSummaryCwd(t *testing.T) {
 			}
 		})
 	}
+	t.Run("overlapping operations: the later one's session owns both sessions' calls (D7)", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		one, two := &fakeHost{sessionID: "one", cwd: t.TempDir()}, &fakeHost{sessionID: "two", cwd: t.TempDir()}
+		h.b.OnSessionStart(one, "startup")
+		h.b.OnSessionStart(two, "startup")
+		h.b.OnSessionBeforeCompact(one)
+		h.b.OnSessionBeforeCompact(two)
+		for _, host := range []*fakeHost{one, two} {
+			h.script(replies("summary"))
+			finalOf(t, mustStream(h.b.IsolatedStream(context.Background(), host, testModel, isolatedContext, map[string]any{"cacheRetention": "none"}, "summary", nil, nil)))
+		}
+		if s := h.spawns(); s[0].opts.Cwd != two.cwd || s[1].opts.Cwd != two.cwd {
+			t.Fatalf("cwds = %q, %q, want both %q", s[0].opts.Cwd, s[1].opts.Cwd, two.cwd)
+		}
+	})
 	t.Run("without a pending summary the call's own session id owns the cwd, else the process cwd", func(t *testing.T) {
 		h := newProviderHarness(t, nil)
 		h.b.rememberSessionCwd("own", "/agents/own")
@@ -217,7 +233,7 @@ func TestIsolatedStream(t *testing.T) {
 			t.Fatalf("events = %v", events)
 		}
 	})
-	t.Run("an abort that races the end of the frames still reports aborted", func(t *testing.T) {
+	t.Run("an abort landing with the end of the frames still reports aborted", func(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			h := newProviderHarness(t, nil)
 			spawned := make(chan *fakeClient, 1)
@@ -230,6 +246,19 @@ func TestIsolatedStream(t *testing.T) {
 			if reply := finalOf(t, stream); reply["stopReason"] != "aborted" || reply["errorMessage"] != "Operation aborted" {
 				t.Fatalf("reply = %v", reply)
 			}
+		}
+	})
+	// Deterministic: the loop sees the frames end with no abort yet, and the abort lands
+	// while it waits for the exit, so the check after the loop is what reports it.
+	t.Run("an abort after the loop saw the frames end still reports aborted", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		h.script(func(s *spawn) {
+			s.client.onWait = cancel
+			s.client.exit(0, "")
+		})
+		if reply := finalOf(t, mustStream(h.b.IsolatedStream(ctx, h.host, testModel, isolatedContext, nil, "summary", nil, nil))); reply["stopReason"] != "aborted" {
+			t.Fatalf("reply = %v", reply)
 		}
 	})
 	t.Run("a failed spawn is an error", func(t *testing.T) {

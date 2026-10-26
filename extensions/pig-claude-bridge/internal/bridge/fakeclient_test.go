@@ -35,8 +35,9 @@ type fakeClient struct {
 	endInputs  int
 	// onWrite, when set, runs for every WriteUser and decides its result.
 	onWrite func(ccproto.UserMessage) error
-	// onInterrupt and onClose, when set, run first in Interrupt and Close.
-	onInterrupt, onClose func()
+	// onInterrupt and onClose, when set, run first in Interrupt and Close; onWait
+	// runs in Wait once the process has exited.
+	onInterrupt, onClose, onWait func()
 }
 
 type scriptItem struct {
@@ -154,8 +155,12 @@ func (f *fakeClient) Close(context.Context) error {
 func (f *fakeClient) Wait() error {
 	<-f.done
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.waitErr
+	hook, err := f.onWait, f.waitErr
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return err
 }
 
 func (f *fakeClient) StderrTail() string {

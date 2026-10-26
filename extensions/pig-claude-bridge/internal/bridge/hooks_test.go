@@ -420,10 +420,10 @@ func TestAgentStartCaptureDocumentedGaps(t *testing.T) {
 // --- unit-compaction-coexistence.mjs ---
 
 // The TypeScript drives a real pi session, extension runner and native summarizer;
-// PiG has no counterpart in this test, so the adaptation asserts the same
-// contract at the bridge's boundary: the bridge serves each summary on an isolated
-// process (never a provider query), never owns the compaction (its handlers return nothing), and records
-// the rewrite only when a compaction completed.
+// PiG has no counterpart in this test, so the adaptation asserts the same contract
+// at the bridge's boundary: the bridge serves each summary on an isolated process
+// (never a provider query), never owns the compaction (its handlers return
+// nothing), and records the rewrite only when a compaction completed.
 func TestBridgeLeavesCompactionAndBranchSummaryOwnershipToPiAndOtherExtensions(t *testing.T) {
 	t.Run("the before-compact and before-tree hooks only remember the session", func(t *testing.T) {
 		h := newProviderHarness(t, nil)

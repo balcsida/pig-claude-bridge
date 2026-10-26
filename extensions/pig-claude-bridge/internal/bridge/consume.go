@@ -278,6 +278,10 @@ func (b *Bridge) awaitExit(ctx context.Context, client ccproto.Client) error {
 	select {
 	case <-client.Done():
 	case <-ctx.Done():
+	}
+	// An abort wins over the exit it may have caused, as wasAborted does in the
+	// TypeScript, whichever of the two the select saw first.
+	if ctx.Err() != nil {
 		return nil
 	}
 	err := client.Wait()
