@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"strconv"
 )
@@ -149,6 +150,12 @@ func (p *Process) serveRequest(h frameHead) {
 			p.mu.Lock()
 			delete(p.inflight, h.RequestID)
 			p.mu.Unlock()
+		}()
+		// A panicking handler must not kill the host process; Claude Code is answered instead of left waiting.
+		defer func() {
+			if r := recover(); r != nil {
+				p.sendError(h.RequestID, fmt.Sprintf("claude-bridge: panic serving control request: %v", r))
+			}
 		}()
 		p.handleRequest(ctx, h)
 	}()

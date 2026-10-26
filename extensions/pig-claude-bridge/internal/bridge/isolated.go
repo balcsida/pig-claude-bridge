@@ -138,6 +138,7 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 	writer.Add(1)
 	go func() {
 		defer writer.Done()
+		defer b.recoverHandler("isolated writer")
 		if err := client.WriteUser(userMessage([]any{map[string]any{"type": "text", "text": promptText}}, "")); err != nil {
 			writeErr <- fmt.Errorf("write user message: %w", err)
 			return
@@ -155,7 +156,7 @@ loop:
 		var raw []byte
 		select {
 		case <-ctx.Done():
-			killClient(client)
+			b.killClient(client)
 			return aborted()
 		case err := <-writeErr:
 			return fail(err.Error())

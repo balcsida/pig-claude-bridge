@@ -324,3 +324,19 @@ func TestStartCloseCyclesDoNotLeakDescriptors(t *testing.T) {
 		t.Fatalf("descriptors grew from %d to %d over 10 cycles", first, last)
 	}
 }
+
+func TestPanickingStderrHandlerIsContained(t *testing.T) {
+	called := make(chan struct{}, 4)
+	p, _ := startFake(t, map[string]string{"FAKECLAUDE_STDERR": "boom"}, Handlers{OnStderr: func(string) {
+		called <- struct{}{}
+		panic("stderr handler exploded")
+	}})
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnStderr never ran")
+	}
+	if _, err := p.Interrupt(context.Background()); err != nil {
+		t.Fatalf("the transport stopped serving after the panic: %v", err)
+	}
+}

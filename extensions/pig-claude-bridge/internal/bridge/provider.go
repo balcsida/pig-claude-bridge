@@ -377,6 +377,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	b.queries.Add(2)
 	go func() {
 		defer b.queries.Done()
+		defer b.recoverHandler("initial prompt push")
 		if err := promptStream.Push(queryCtx, userMessage(promptContent, "")); err != nil {
 			b.debugf("provider: initial prompt push rejected: %v", err)
 		}
@@ -385,9 +386,11 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	var abortOnce sync.Once
 	onAbort := func() {
 		abortOnce.Do(func() {
+			// context.AfterFunc runs this on a goroutine of its own.
+			defer b.recoverHandler("abort")
 			b.drainForAbort(q)
 			// Interrupt asks the CLI to stop gracefully and close kills it; both are needed.
-			killClient(client)
+			b.killClient(client)
 			cancelQuery()
 		})
 	}

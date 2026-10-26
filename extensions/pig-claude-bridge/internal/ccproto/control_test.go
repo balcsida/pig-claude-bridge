@@ -3,7 +3,9 @@ package ccproto
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -84,4 +86,23 @@ func TestInterruptReceipt(t *testing.T) {
 	if req["subtype"] != "interrupt" || req["cancel_queued"] != true {
 		t.Fatalf("interrupt frame = %v", lines[1])
 	}
+}
+
+// A panicking handler must not take the fused PiG process down: Claude Code gets an
+// error response and the transport keeps serving.
+func TestPanickingHandlerGetsAnErrorResponseAndServingContinues(t *testing.T) {
+	reply := `{"jsonrpc":"2.0","id":2,"result":{"content":[]}}`
+	_, out := startFake(t, map[string]string{"FAKECLAUDE_SCRIPT": "two_mcp_calls.jsonl"}, Handlers{
+		OnMcpMessage: func(_ context.Context, _ string, msg json.RawMessage) (json.RawMessage, bool, error) {
+			if strings.Contains(string(msg), `"id":1`) {
+				panic("handler exploded")
+			}
+			return json.RawMessage(reply), true, nil
+		},
+	})
+	lines := waitStdin(t, out, func(l []map[string]any) bool { return responseFor(l, "p1") != nil && responseFor(l, "p2") != nil })
+	if r := responseFor(lines, "p1"); r["subtype"] != "error" || !strings.Contains(fmt.Sprint(r["error"]), "handler exploded") {
+		t.Fatalf("p1 = %v", r)
+	}
+	sameJSON(t, responseFor(lines, "p2"), `{"request_id":"p2","response":{"mcp_response":`+reply+`},"subtype":"success"}`)
 }

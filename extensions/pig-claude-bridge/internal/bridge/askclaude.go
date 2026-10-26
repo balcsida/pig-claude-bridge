@@ -144,6 +144,7 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 	writer.Add(1)
 	go func() {
 		defer writer.Done()
+		defer b.recoverHandler("askClaude writer")
 		if err := client.WriteUser(userMessage([]any{map[string]any{"type": "text", "text": r.Prompt}}, "")); err != nil {
 			writeErr <- fmt.Errorf("write user message: %w", err)
 			return
@@ -159,7 +160,7 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 		var raw []byte
 		select {
 		case <-ctx.Done():
-			killClient(client)
+			b.killClient(client)
 			return "", errors.New("Aborted")
 		case err := <-writeErr:
 			return "", err

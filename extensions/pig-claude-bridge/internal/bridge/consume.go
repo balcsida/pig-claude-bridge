@@ -451,6 +451,7 @@ func (b *Bridge) runConsume(ctx context.Context, host Host, q *QueryContext, cli
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
+		defer b.recoverHandler("pumpPrompt")
 		if ps != nil {
 			b.pumpPrompt(ctx, client, ps)
 		}
@@ -565,16 +566,18 @@ func (b *Bridge) teardownQuery(q *QueryContext, client ccproto.Client, ps *Promp
 
 // killClient stops the subprocess: interrupt asks the CLI to stop gracefully and
 // close kills it; both are needed, interrupt alone lets the current API call finish.
-func killClient(client ccproto.Client) {
+func (b *Bridge) killClient(client ccproto.Client) {
 	if client == nil {
 		return
 	}
 	go func() {
+		defer b.recoverHandler("killClient interrupt")
 		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 		defer cancel()
 		_, _ = client.Interrupt(ctx)
 	}()
 	go func() {
+		defer b.recoverHandler("killClient close")
 		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 		defer cancel()
 		_ = client.Close(ctx)
@@ -668,7 +671,7 @@ func (b *Bridge) discardRewrittenQuery(q *QueryContext, reason string) {
 	// Settle the parked handlers before killing the CLI: one left awaiting a dead
 	// subprocess never settles.
 	q.releasePendingToolCalls(reason)
-	killClient(discarded)
+	b.killClient(discarded)
 	// The CLI may still flush a record into the session JSONL and the rebuild is
 	// next, so rotate rather than race it. Only this session's mirror.
 	b.markSessionNeedsRebuild(q.piSessionID, true)

@@ -365,14 +365,21 @@ func (p *Process) readStderr(r io.Reader) {
 				p.tail = append([]rune(nil), p.tail[len(p.tail)-stderrTailChars:]...)
 			}
 			p.mu.Unlock()
-			if p.handlers.OnStderr != nil {
-				p.handlers.OnStderr(chunk)
-			}
+			p.forwardStderr(chunk)
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+// forwardStderr hands chunk to the consumer; a panic there is dropped so the reader keeps draining stderr.
+func (p *Process) forwardStderr(chunk string) {
+	if p.handlers.OnStderr == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	p.handlers.OnStderr(chunk)
 }
 
 // wait reaps the child, gives the pipes DrainGrace to reach EOF (a grandchild may hold them open), then

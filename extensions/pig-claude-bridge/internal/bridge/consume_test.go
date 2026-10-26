@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -931,7 +933,7 @@ func TestAbortOnARunThatContinuesAParkedQuery(t *testing.T) {
 				c.aborted <- struct{}{}
 				h.cancelQ()
 				h.b.drainForAbort(h.q)
-				killClient(h.client)
+				h.b.killClient(h.client)
 			})
 		}
 		bind, unbind := h.b.newRunBinder(h.q, h.ctx, onAbort)
@@ -1523,4 +1525,19 @@ func TestPanicInTheResultFallbackStillEndsWithOneErrorEvent(t *testing.T) {
 	if len(terminal) != 1 || terminal[0]["type"] != "error" || !strings.Contains(str(obj(terminal[0]["error"])["errorMessage"]), "internal error") {
 		t.Fatalf("terminal = %v", terminal)
 	}
+}
+
+// A panic in a goroutine the bridge starts would kill the fused PiG process; it becomes a debug line.
+func TestKillClientContainsPanics(t *testing.T) {
+	b, _, agentDir := newTestBridge(t, true)
+	client := newFakeClient()
+	client.onInterrupt = func() { panic("interrupt exploded") }
+	client.onClose = func() { panic("close exploded") }
+	b.killClient(client)
+	waitFor(t, "both panics to be logged", func() bool {
+		data, _ := os.ReadFile(filepath.Join(agentDir, "claude-bridge.log"))
+		log := string(data)
+		return strings.Contains(log, "killClient interrupt: recovered from panic: interrupt exploded") &&
+			strings.Contains(log, "killClient close: recovered from panic: close exploded")
+	})
 }

@@ -368,3 +368,15 @@ func TestIsolatedStreamHonoursAnAbortWhileClaudeCodeStarts(t *testing.T) {
 		t.Fatalf("reply = %v", reply)
 	}
 }
+
+func TestIsolatedWriterPanicIsContained(t *testing.T) {
+	h := newProviderHarness(t, func(d *Deps) { d.Debug = true })
+	h.script(func(s *spawn) {
+		s.client.onWrite = func(ccproto.UserMessage) error { panic("writer exploded") }
+		replies("advice")(s)
+	})
+	finalOf(t, mustStream(h.b.IsolatedStream(context.Background(), h.host, testModel, isolatedContext, nil, "compact-summary", nil, nil)))
+	if log := readDebugLog(t, h.agentDir); !strings.Contains(log, "isolated writer: recovered from panic: writer exploded") {
+		t.Fatalf("log:\n%s", log)
+	}
+}
