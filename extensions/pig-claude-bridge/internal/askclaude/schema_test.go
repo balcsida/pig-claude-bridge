@@ -1,6 +1,7 @@
 package askclaude
 
 import (
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -172,4 +173,17 @@ func TestDisallowedTools(t *testing.T) {
 	equal(t, DisallowedTools(ModeNone), append(append([]string{}, blocked...),
 		"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent", "NotebookEdit", "EnterWorktree", "ExitWorktree",
 		"CronCreate", "CronDelete", "TeamCreate", "TeamDelete", "WebFetch", "WebSearch"))
+}
+
+// End to end: a defaultMode of the wrong type in claude-bridge.json fails closed, to none.
+func TestMistypedConfiguredDefaultModeResolvesToNone(t *testing.T) {
+	agentDir := t.TempDir()
+	if err := os.WriteFile(config.GlobalConfigPath(agentDir), []byte(`{"askClaude":{"enabled":true,"defaultMode":5}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Load(agentDir, t.TempDir(), ".pi")
+	mode, err := ResolveMode(Unset, ResolveDefaults(cfg.AskClaude))
+	if err != nil || mode != ModeNone {
+		t.Fatalf("mode = %q, %v", mode, err)
+	}
 }

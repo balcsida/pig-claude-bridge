@@ -154,6 +154,10 @@ func run(ctx sdk.Context, h bridge.Host, goCtx context.Context, b *bridge.Bridge
 	request.PiSessionID, _ = ctx.SessionManager().GetSessionID()
 
 	stop, stopped := make(chan struct{}), sync.WaitGroup{}
+	var stopOnce sync.Once
+	// Deferred too, so a panic below cannot leave the ticker updating a finished call.
+	stopTicker := func() { stopOnce.Do(func() { close(stop); stopped.Wait() }) }
+	defer stopTicker()
 	stopped.Add(1)
 	go func() {
 		defer stopped.Done()
@@ -174,8 +178,7 @@ func run(ctx sdk.Context, h bridge.Host, goCtx context.Context, b *bridge.Bridge
 		}
 	}()
 	text, err := b.PromptAndWait(goCtx, h, request)
-	close(stop)
-	stopped.Wait()
+	stopTicker() // before the clearing update, which a late tick would overwrite
 	if err != nil {
 		return errorResult(prompt, start, err.Error())
 	}
