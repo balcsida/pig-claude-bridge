@@ -54,6 +54,10 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 	fail := func(message string) map[string]any {
 		return map[string]any{"type": "error", "reason": "error", "error": newAssistantOutput(model, "", "error", message)}
 	}
+	aborted := func() map[string]any {
+		b.debugf("compact summary: aborted")
+		return map[string]any{"type": "error", "reason": "aborted", "error": newAssistantOutput(model, "", "aborted", "Operation aborted")}
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			b.debugf("isolated: recovered from panic: %v\n%s", r, debug.Stack())
@@ -81,8 +85,11 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 			return fail(err.Error())
 		}
 	}
-	exe, err := b.resolveExecutable(host)
+	exe, err := b.resolveExecutable(ctx, host)
 	if err != nil {
+		if ctx.Err() != nil {
+			return aborted()
+		}
 		return fail(err.Error())
 	}
 	// D7: the most recent pending summary stands for the TypeScript's per-signal lookup.
@@ -106,10 +113,6 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 		SystemPrompt: str(piContext["systemPrompt"]), SystemPromptSet: true,
 		StrictMcpConfig: true, NoSessionPersistence: true,
 		Settings: map[string]any{"autoMemoryEnabled": false}, DebugFile: debugFile,
-	}
-	aborted := func() map[string]any {
-		b.debugf("compact summary: aborted")
-		return map[string]any{"type": "error", "reason": "aborted", "error": newAssistantOutput(model, "", "aborted", "Operation aborted")}
 	}
 	// The process lives no longer than this call, so the call's abort also stops its start-up.
 	runCtx, cancelRun := context.WithCancel(ctx)

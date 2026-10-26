@@ -40,7 +40,9 @@ type AskRequest struct {
 // PromptAndWait runs one AskClaude query on its own Claude Code process with the
 // native tools the mode leaves enabled, and returns Claude's answer. Unlike
 // IsolatedStream it resumes the calling pi session's remembered Claude Code session
-// unless the call is isolated, and may take many turns. A panic becomes an error.
+// unless the call is isolated, and may take many turns. A panic becomes an error. As
+// in the TypeScript, an abort before the process starts is the "Aborted" error, while
+// one after returns the answer so far (stopReason cancelled), which is not an error.
 func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (text string, err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -101,8 +103,11 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 		summarized := "summarized"
 		extraArgs = append(extraArgs, ccproto.ExtraArg{Key: "thinking-display", Value: &summarized})
 	}
-	exe, err := b.resolveExecutable(host)
+	exe, err := b.resolveExecutable(ctx, host)
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", errors.New("Aborted")
+		}
 		return "", err
 	}
 	b.debugf("askClaude: disallowed=%d model=%s cliModel=%s effort=%s isolated=%t resume=%s skills=%t promptLen=%d",
@@ -127,7 +132,8 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 	client, err := b.deps.Spawn(runCtx, opts, ccproto.Handlers{OnStderr: onStderr})
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", errors.New("Aborted")
+			b.debugf("askClaude: done stopReason=cancelled responseLen=0")
+			return "", nil
 		}
 		return "", fmt.Errorf("start Claude Code: %v", err)
 	}
@@ -155,13 +161,17 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 	}()
 
 	response := ""
+	cancelled := func() (string, error) {
+		b.killClient(client)
+		b.debugf("askClaude: done stopReason=cancelled responseLen=%d", len([]rune(response)))
+		return response, nil
+	}
 	frames := client.Frames()
 	for {
 		var raw []byte
 		select {
 		case <-ctx.Done():
-			b.killClient(client)
-			return "", errors.New("Aborted")
+			return cancelled()
 		case err := <-writeErr:
 			return "", err
 		case f, open := <-frames:
@@ -170,12 +180,16 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 					return "", err
 				}
 				if ctx.Err() != nil {
-					return "", errors.New("Aborted")
+					return cancelled()
 				}
-				b.debugf("askClaude: done responseLen=%d", len([]rune(response)))
+				b.debugf("askClaude: done stopReason=stop responseLen=%d", len([]rune(response)))
 				return response, nil
 			}
 			raw = f
+		}
+		// The TypeScript stops reading at the first message after an abort.
+		if ctx.Err() != nil {
+			return cancelled()
 		}
 		var frame map[string]any
 		if err := json.Unmarshal(raw, &frame); err != nil {

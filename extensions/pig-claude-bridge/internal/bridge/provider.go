@@ -249,8 +249,11 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		return errorStream(model, err.Error())
 	}
 
-	exe, err := b.resolveExecutable(host)
+	exe, err := b.resolveExecutable(ctx, host)
 	if err != nil {
+		if ctx.Err() != nil {
+			return abortedStream(model)
+		}
 		return errorStream(model, err.Error())
 	}
 
@@ -576,8 +579,9 @@ func (b *Bridge) clearRewriteMark(piSessionID string) {
 
 // resolveExecutable finds the Claude Code binary once per process and, on that
 // first resolution, warns about a binary older than the supported minimum. A missing
-// binary fails the query, with a notice each time it is tried.
-func (b *Bridge) resolveExecutable(host Host) (string, error) {
+// binary fails the query, with a notice each time it is tried. ctx ending stops the
+// version probe; nothing is cached then, so the next call probes again.
+func (b *Bridge) resolveExecutable(ctx context.Context, host Host) (string, error) {
 	// Single flight: concurrent first calls share one version probe.
 	b.resolveMu.Lock()
 	defer b.resolveMu.Unlock()
@@ -594,10 +598,12 @@ func (b *Bridge) resolveExecutable(host Host) (string, error) {
 	exe, err := ccproto.ResolveExecutable(configured)
 	if err == nil {
 		var version string
-		if version, err = ccproto.Version(exe); err == nil {
+		if version, err = ccproto.Version(ctx, exe); err == nil {
 			if ccproto.OlderThan(version, ccproto.MinVersion) {
 				host.Notify(fmt.Sprintf("Claude Code %s is older than the supported %s; update it. The bridge continues, but some behaviour may be missing.", version, ccproto.MinVersion), "warning")
 			}
+		} else if ctx.Err() != nil {
+			return "", ctx.Err()
 		} else if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, fs.ErrNotExist) {
 			// A version the bridge cannot read does not stop the query; spawning reports a real failure.
 			b.debugf("provider: cannot check the Claude Code version: %v", err)

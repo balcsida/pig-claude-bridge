@@ -1006,6 +1006,27 @@ func TestStreamSimpleFailuresEndTheTurnOnTheStream(t *testing.T) {
 		}
 	})
 
+	t.Run("an abort stops the version probe, ends the turn as aborted and leaves nothing cached", func(t *testing.T) {
+		slow := filepath.Join(t.TempDir(), "claude")
+		if err := os.WriteFile(slow, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		h := newProviderHarness(t, func(d *Deps) { d.Config.Provider.PathToClaudeCodeExecutable = &slow })
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(100*time.Millisecond, cancel)
+		start := time.Now()
+		reply := finalOf(t, h.call(ctx, "pi-probe", msgs(userMsg("hi"))))
+		if reply["stopReason"] != "aborted" || time.Since(start) > 3*time.Second {
+			t.Fatalf("reply = %v after %s", reply, time.Since(start))
+		}
+		h.b.mu.Lock()
+		cached := h.b.executable
+		h.b.mu.Unlock()
+		if cached != "" || len(h.host.noticeList()) != 0 || len(h.spawns()) != 0 {
+			t.Fatalf("cached %q, notices %v, spawns %d", cached, h.host.noticeList(), len(h.spawns()))
+		}
+	})
+
 	t.Run("a Spawn failure fails the turn and leaves nothing claimed", func(t *testing.T) {
 		h := newProviderHarness(t, func(d *Deps) {
 			d.Spawn = func(context.Context, ccproto.Options, ccproto.Handlers) (ccproto.Client, error) {
