@@ -80,6 +80,8 @@ func TestArgvMatchesNodeSdkSnapshot(t *testing.T) {
 				k, v, _ := strings.Cut(kv, "=")
 				gotEnv[k] = v
 			}
+			// The recorder builds env without process.env, where the TypeScript bridge sets this one.
+			delete(gotEnv, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 			if !reflect.DeepEqual(gotEnv, e.Env) {
 				t.Errorf("env\n got  %v\n want %v", gotEnv, e.Env)
 			}

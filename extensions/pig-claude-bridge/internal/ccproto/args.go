@@ -125,7 +125,8 @@ func settingsJSON(settings map[string]any) string {
 }
 
 // BuildEnv returns the child environment: base plus o.Env, minus NODE_OPTIONS, DEBUG, TRACEPARENT and
-// TRACESTATE, with the SDK identity variables added when unset, then CCChildEnv and PI_CODING_AGENT=true.
+// TRACESTATE, with the SDK identity variables added when unset, then CCChildEnv,
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (index.ts sets it on process.env at load) and PI_CODING_AGENT=true.
 // Later entries win over earlier duplicates in the returned slice (execve semantics for the consumer).
 func BuildEnv(base []string, o Options) []string {
 	strip := map[string]bool{"NODE_OPTIONS": true, "DEBUG": true, "TRACEPARENT": true, "TRACESTATE": true}
@@ -160,7 +161,7 @@ func BuildEnv(base []string, o Options) []string {
 	for _, k := range keys {
 		env = append(env, k+"="+CCChildEnv[k])
 	}
-	return append(env, "PI_CODING_AGENT=true")
+	return append(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "PI_CODING_AGENT=true")
 }
 
 // BuildInitialize returns the initialize control request as one JSON object without newline, with the

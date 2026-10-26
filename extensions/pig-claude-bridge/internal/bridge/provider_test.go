@@ -409,6 +409,8 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 		k, v, _ := strings.Cut(kv, "=")
 		env[k] = v
 	}
+	// The recorder builds env without process.env, where the TypeScript bridge sets this one.
+	delete(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 	if !reflect.DeepEqual(env, snap.Env) {
 		t.Errorf("env\n got  %v\n want %v", env, snap.Env)
 	}

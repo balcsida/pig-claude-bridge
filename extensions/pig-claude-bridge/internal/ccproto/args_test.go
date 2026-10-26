@@ -75,9 +75,19 @@ func TestBuildEnv(t *testing.T) {
 	env := BuildEnv(base, Options{})
 	want := []string{"PATH=/bin", "HOME=/h",
 		"CLAUDE_CODE_ENTRYPOINT=sdk-ts", "CLAUDE_AGENT_SDK_VERSION=0.3.310", "CLAUDE_CODE_SDK_READS_SESSION_STATE=1",
-		"CLAUDE_CODE_ELEGANT_MEADOW=0", "DISABLE_AUTO_COMPACT=1", "ENABLE_CLAUDEAI_MCP_SERVERS=0", "PI_CODING_AGENT=true"}
+		"CLAUDE_CODE_ELEGANT_MEADOW=0", "DISABLE_AUTO_COMPACT=1", "ENABLE_CLAUDEAI_MCP_SERVERS=0",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "PI_CODING_AGENT=true"}
 	if !reflect.DeepEqual(env, want) {
 		t.Fatalf("got %q\nwant %q", env, want)
+	}
+}
+
+// The TypeScript sets CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 on its own process.env at load
+// (index.ts:2465), overwriting any inherited value, and every child inherits it.
+func TestBuildEnvOverridesNonessentialTraffic(t *testing.T) {
+	env := BuildEnv([]string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0"}, Options{})
+	if got := slices.Index(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"); got < slices.Index(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0") {
+		t.Fatalf("the inherited value wins: %q", env)
 	}
 }
 
