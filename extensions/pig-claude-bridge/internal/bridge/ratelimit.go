@@ -64,12 +64,12 @@ func rateLimitHeaders(info RateLimitInfo) map[string]string {
 	set("overage-status", info.OverageStatus, info.OverageStatus != "")
 	setNumber("overage-reset", info.OverageResetsAt)
 	for name, window := range info.UnifiedWindows {
+		if window == nil {
+			continue
+		}
 		abbreviation, ok := windowAbbreviations[name]
 		if !ok {
 			abbreviation = name
-		}
-		if window == nil {
-			continue
 		}
 		setNumber(abbreviation+"-utilization", window.Utilization)
 		setNumber(abbreviation+"-reset", window.ResetsAt)
@@ -95,7 +95,7 @@ func resultErrorText(frame map[string]any) (text string, ok bool) {
 	if errs, _ := frame["errors"].([]any); len(errs) > 0 {
 		parts := make([]string, len(errs))
 		for i, e := range errs {
-			parts[i] = fmt.Sprint(e)
+			parts[i] = fmt.Sprint(e) // errors is string[] in the SDK; JavaScript's String() differs only for other types
 		}
 		return strings.Join(parts, "\n"), true
 	}
@@ -196,7 +196,7 @@ func (b *Bridge) handleRateLimitEvent(host Host, q *QueryContext, info RateLimit
 		}
 	}
 	q.mu.Unlock()
-	if notice != "" {
+	if notice != "" && host != nil { // the TypeScript's piUI?.notify
 		host.Notify(notice, "warning")
 	}
 }
