@@ -93,7 +93,7 @@ func New(d Deps) *Bridge {
 		historyRewritten: map[string]struct{}{},
 		contexts:         map[*QueryContext]struct{}{},
 		cwds:             map[string]string{},
-		longContext:      longContextSettings(d.Config.Provider),
+		longContext:      LongContextSettings(d.Config.Provider),
 	}
 	b.captures = promptcapture.NewCaptures(0, b.debugCaptureMiss)
 	b.queueStartupNotices()

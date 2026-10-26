@@ -1,6 +1,7 @@
 package claudebridge
 
 import (
+	"errors"
 	"reflect"
 	"regexp"
 	"testing"
@@ -21,11 +22,13 @@ func TestExtensionFactoryReturnsNamedExtension(t *testing.T) {
 	if a == b {
 		t.Fatal("Extension() returned the same value twice")
 	}
+	// PiG refuses an extension whose name differs from its directory (name_mismatch).
+	if a.Name() != "pig-claude-bridge" {
+		t.Fatalf("name = %q", a.Name())
+	}
 }
 
 var _ bridge.Host = (*sdkHost)(nil)
-
-func TestSdkHostImplementsBridgeHost(t *testing.T) {}
 
 func TestRegisteredModelsComeFromCatalog(t *testing.T) {
 	plan := "max"
@@ -74,5 +77,37 @@ func TestBeforeAgentStartInputReadsPromptAndOrderedSections(t *testing.T) {
 func TestBeforeAgentStartInputAcceptsTypedSystemPrompt(t *testing.T) {
 	if prompt, _ := beforeAgentStartInput(map[string]any{"systemPrompt": (*sdk.SystemPrompt)(nil)}); prompt != "" {
 		t.Errorf("prompt = %q", prompt)
+	}
+}
+
+type fakePrompt struct {
+	text string
+	err  error
+}
+
+func (p fakePrompt) Get() (string, error) { return p.text, p.err }
+
+// The typed prompt's Get path, through a stand-in: the SDK offers no constructor.
+func TestBeforeAgentStartInputRendersAPromptGetter(t *testing.T) {
+	if prompt, _ := beforeAgentStartInput(map[string]any{"systemPrompt": fakePrompt{text: "rendered"}}); prompt != "rendered" {
+		t.Errorf("prompt = %q", prompt)
+	}
+	if prompt, _ := beforeAgentStartInput(map[string]any{"systemPrompt": fakePrompt{text: "partial", err: errors.New("bad section")}}); prompt != "partial" {
+		t.Errorf("prompt = %q", prompt)
+	}
+}
+
+func TestCompactTagRendersMissingValuesAsTheTypeScriptDoes(t *testing.T) {
+	for _, c := range []struct {
+		data map[string]any
+		want string
+	}{
+		{map[string]any{"reason": "threshold", "willRetry": false}, "session_compact:threshold:willRetry=false"},
+		{map[string]any{}, "session_compact:undefined:willRetry=undefined"},
+		{map[string]any{"reason": nil, "willRetry": true}, "session_compact:null:willRetry=true"},
+	} {
+		if got := compactTag(c.data); got != c.want {
+			t.Errorf("compactTag(%v) = %q, want %q", c.data, got, c.want)
+		}
 	}
 }

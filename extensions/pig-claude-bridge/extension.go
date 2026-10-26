@@ -26,8 +26,10 @@ func (h sdkHost) Notify(message, level string) {
 	h.ctx.Notify(message, level)
 }
 
-func (h sdkHost) SessionID() (string, error)    { return h.ctx.SessionManager().GetSessionID() }
-func (h sdkHost) Cwd() string                   { return h.ctx.Cwd() }
+func (h sdkHost) SessionID() (string, error) { return h.ctx.SessionManager().GetSessionID() }
+func (h sdkHost) Cwd() string                { return h.ctx.Cwd() }
+
+// AgentDir and ConfigDirName are "" outside a host, as in Extension; a call never fails on them.
 func (h sdkHost) AgentDir() string              { d, _ := sdk.AgentDir(); return d }
 func (h sdkHost) ConfigDirName() string         { d, _ := sdk.ConfigDirName(); return d }
 func (h sdkHost) SystemPrompt() (string, error) { return h.ctx.GetSystemPrompt() }
@@ -40,17 +42,7 @@ func (h sdkHost) Mode() (mode string) {
 
 // providerModels is the model list registered with PiG.
 func providerModels(p *config.ProviderConfig) []map[string]any {
-	s := models.LongContextSettings{Plan: "pro"}
-	if p != nil {
-		if p.Plan != nil {
-			s.Plan = *p.Plan
-		}
-		if p.LongContextExtraUsage != nil {
-			s.LongContextExtraUsage = *p.LongContextExtraUsage
-		}
-		s.ForceTwoHundredK = p.ForceTwoHundredK
-	}
-	return models.ApplyLongContext(models.BuildModels(models.Catalog()), s)
+	return models.ApplyLongContext(models.BuildModels(models.Catalog()), bridge.LongContextSettings(p))
 }
 
 // requestContext is the Go context for one stream. The run signal is preferred: it
@@ -100,8 +92,8 @@ func promptOptions(raw any) map[string]any {
 func beforeAgentStartInput(data map[string]any) (string, map[string]any) {
 	prompt := ""
 	switch sp := data["systemPrompt"].(type) {
-	case *sdk.SystemPrompt:
-		if sp != nil {
+	case interface{ Get() (string, error) }: // *sdk.SystemPrompt, which tests cannot construct
+		if p, typed := sp.(*sdk.SystemPrompt); !typed || p != nil {
 			prompt, _ = sp.Get()
 		}
 	case string:
@@ -120,6 +112,8 @@ func orderedSections(s sdk.SystemPromptSections) []promptcapture.Section {
 
 func Extension() *sdk.Extension {
 	ext := sdk.New("pig-claude-bridge")
+	// Unavailable outside a host (validate-only installs, tests): "" then leaves the config
+	// unread and the logs beside the cwd, and the extension still loads.
 	agentDir, _ := sdk.AgentDir()
 	configDirName, _ := sdk.ConfigDirName()
 	cwd, _ := os.Getwd()
@@ -176,13 +170,27 @@ func Extension() *sdk.Extension {
 	forward("turn_start", func(h bridge.Host, _ map[string]any) { b.OnTurnStart(h) })
 	forward("session_before_compact", func(h bridge.Host, _ map[string]any) { b.OnSessionBeforeCompact(h) })
 	forward("session_before_tree", func(h bridge.Host, _ map[string]any) { b.OnSessionBeforeTree(h) })
-	forward("session_compact", func(h bridge.Host, data map[string]any) {
-		b.OnSessionCompact(h, fmt.Sprintf("session_compact:%v:willRetry=%v", data["reason"], data["willRetry"]))
-	})
+	forward("session_compact", func(h bridge.Host, data map[string]any) { b.OnSessionCompact(h, compactTag(data)) })
 	forward("session_compact_failed", func(h bridge.Host, _ map[string]any) { b.OnSessionCompactFailed(h) })
 	forward("session_tree", func(h bridge.Host, _ map[string]any) { b.OnSessionTree(h) })
 	forward("session_shutdown", func(h bridge.Host, _ map[string]any) { b.OnSessionShutdown(h) })
 	return ext
+}
+
+// compactTag is the TypeScript's session_compact:${reason}:willRetry=${willRetry}: an absent
+// value renders as undefined and a null one as null, as a template string renders them.
+func compactTag(data map[string]any) string {
+	show := func(key string) any {
+		v, present := data[key]
+		switch {
+		case !present:
+			return "undefined"
+		case v == nil:
+			return "null"
+		}
+		return v
+	}
+	return fmt.Sprintf("session_compact:%v:willRetry=%v", show("reason"), show("willRetry"))
 }
 
 // panicError turns a recovered panic at the provider boundary into a failed stream.
