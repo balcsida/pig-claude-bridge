@@ -16,21 +16,30 @@ type snapshotEntry struct {
 	Initialize json.RawMessage   `json:"initialize"`
 }
 
+var providerSnapshotOptions = Options{
+	Effort: "high", Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions",
+	IncludePartialMessages: true,
+	Settings: map[string]any{
+		"autoMemoryEnabled": false, "includeGitInstructions": false,
+		"claudeMdExcludes": []string{"**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"},
+	},
+	SDKMcpServers: []string{"custom-tools"}, AppendSystemPrompt: "APPEND",
+	ExtraArgs: []ExtraArg{
+		{Key: "model", Value: ptr("claude-opus-5-5")}, {Key: "replay-user-messages"},
+		{Key: "strict-mcp-config"}, {Key: "thinking-display", Value: ptr("summarized")},
+	},
+}
+
+// withDebugFile is o as CLAUDE_BRIDGE_DEBUG=1 runs it; the recorder replaces the file path with <debug-file>.
+func withDebugFile(o Options) Options {
+	o.DebugFile = "<debug-file>"
+	return o
+}
+
 // snapshotOptions are the Options equivalent to the options record-sdk-argv.mjs gave the Node SDK.
 var snapshotOptions = map[string]Options{
-	"provider": {
-		Effort: "high", Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions",
-		IncludePartialMessages: true,
-		Settings: map[string]any{
-			"autoMemoryEnabled": false, "includeGitInstructions": false,
-			"claudeMdExcludes": []string{"**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"},
-		},
-		SDKMcpServers: []string{"custom-tools"}, AppendSystemPrompt: "APPEND",
-		ExtraArgs: []ExtraArg{
-			{Key: "model", Value: ptr("claude-opus-5-5")}, {Key: "replay-user-messages"},
-			{Key: "strict-mcp-config"}, {Key: "thinking-display", Value: ptr("summarized")},
-		},
-	},
+	"provider":       providerSnapshotOptions,
+	"provider-debug": withDebugFile(providerSnapshotOptions),
 	"isolated-summary": {
 		Model: "claude-opus-5-5", Effort: "high", MaxTurns: 1, Resume: "11111111-1111-1111-1111-111111111111",
 		Tools: []string{}, ToolsSet: true, SettingSourcesSet: true, StrictMcpConfig: true, NoSessionPersistence: true,
