@@ -9,10 +9,18 @@ import (
 // The Go equivalent of index.ts's __test seam: helpers tests use to plant and read
 // state. Tests share the package, so these touch unexported fields directly.
 
-// recordingHost is a Host that records Notify calls.
+// recordingHost is a Host that records Notify and SetStatus calls.
 type recordingHost struct {
-	notices []string
-	cwd     string
+	notices  []string
+	statuses map[string]string
+	cwd      string
+}
+
+func (h *recordingHost) SetStatus(key, text string) {
+	if h.statuses == nil {
+		h.statuses = map[string]string{}
+	}
+	h.statuses[key] = text
 }
 
 func (h *recordingHost) Notify(message, level string) {

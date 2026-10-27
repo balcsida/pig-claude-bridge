@@ -33,6 +33,8 @@ the rebuild, attachment and parallel-result live tests that `tests/live` also ru
 - Not covered (as in TypeScript): `DISABLE_AUTO_COMPACT`, steer draining at tool boundaries, `rate_limit_event`
   shape; `updatedInput` on allow cannot be expressed through the client (it answers `can_use_tool` with the
   "not provided" error).
+- Beyond the TypeScript file: `TestGetUsageAnswersWithKeyedWindows` pins the `get_usage` reply the footer's usage
+  status reads. A held rate-limit reset (`cedar_ember` grants) has not been observed live, so its shape is unpinned.
 
 Differences from the TypeScript file:
 - "the SDK treats our McpServer as an opaque endpoint" has no Go counterpart; `TestMcpMessageMethodsStayWithinTheServedSet`
