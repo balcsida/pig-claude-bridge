@@ -1,12 +1,17 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccproto"
 )
 
 const rateLimitHeaderPrefix = "anthropic-ratelimit-unified"
@@ -199,6 +204,159 @@ func (b *Bridge) handleRateLimitEvent(host Host, q *QueryContext, info RateLimit
 	if notice != "" && host != nil { // the TypeScript's piUI?.notify
 		host.Notify(notice, "warning")
 	}
+	q.mu.Lock()
+	client := q.activeQuery
+	q.mu.Unlock()
+	b.showUsage(host, client, info.UnifiedWindows)
+}
+
+// showUsage puts the plan's usage in the footer status. The event's windows lack the
+// per-model limits' names, so it asks the live CLI for its /usage rows and falls back
+// to the windows when there is no client or the CLI does not answer.
+func (b *Bridge) showUsage(host Host, client ccproto.Client, windows map[string]*UsageWindow) {
+	s, ok := host.(StatusSetter)
+	if !ok {
+		return
+	}
+	set := func(status string) {
+		if status != "" {
+			s.SetStatus(UsageStatusKey, status)
+		}
+	}
+	if client == nil {
+		set(usageStatus(windows, b.deps.Now()))
+		return
+	}
+	b.queries.Add(1)
+	go func() {
+		defer b.queries.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		reply, err := client.Usage(ctx)
+		status := planUsageStatus(reply, b.deps.Now())
+		if err != nil || status == "" {
+			b.debugf("rate limit: get_usage unusable (%v), showing the event's windows", err)
+			status = usageStatus(windows, b.deps.Now())
+		}
+		set(status)
+	}()
+}
+
+// UsageStatusKey is the footer status entry that shows the plan's usage windows.
+const UsageStatusKey = "claude-usage"
+
+// StatusSetter is a Host that can show a footer status; hosts without one skip it.
+type StatusSetter interface{ SetStatus(key, text string) }
+
+// usageStatus renders the unified windows as "Claude 5h 14% ↻3h · 7d 1% ↻2d", or ""
+// when no window carries a utilization.
+func usageStatus(windows map[string]*UsageWindow, now time.Time) string {
+	var parts []string
+	for _, name := range slices.Sorted(maps.Keys(windows)) {
+		w := windows[name]
+		if w == nil || w.Utilization == nil {
+			continue
+		}
+		label, ok := windowAbbreviations[name]
+		if !ok {
+			label = name
+		}
+		var resetsAt time.Time
+		if w.ResetsAt != nil {
+			resetsAt = time.Unix(int64(*w.ResetsAt), 0)
+		}
+		parts = append(parts, fmt.Sprintf("%s %d%%", label, int(math.Floor(*w.Utilization*100+0.5)))+resetsIn(resetsAt, now))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Claude " + strings.Join(parts, " · ")
+}
+
+// resetsIn is " ↻3h": the time to a window's reset, floored to its largest unit as the
+// Claude app shows it, or "" when the reset is unknown or past.
+func resetsIn(at, now time.Time) string {
+	d := at.Sub(now)
+	switch {
+	case at.IsZero() || d <= 0:
+		return ""
+	case d < time.Hour:
+		return fmt.Sprintf(" ↻%dm", max(1, int(d/time.Minute)))
+	case d < 24*time.Hour:
+		return fmt.Sprintf(" ↻%dh", int(d/time.Hour))
+	}
+	return fmt.Sprintf(" ↻%dd", int(d/(24*time.Hour)))
+}
+
+// usageWindow is one keyed limit of a get_usage reply; utilization is a percentage.
+type usageWindow struct {
+	DisplayName string    `json:"display_name"`
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resets_at"`
+}
+
+// usageReply is the part of a get_usage reply the footer reads. It reads the keyed
+// windows, not the labelled limits[] rows, which the server sometimes leaves out.
+type usageReply struct {
+	RateLimits *struct {
+		FiveHour    *usageWindow  `json:"five_hour"`
+		SevenDay    *usageWindow  `json:"seven_day"`
+		ModelScoped []usageWindow `json:"model_scoped"`
+		CedarEmber  any           `json:"cedar_ember"`
+	} `json:"rate_limits"`
+}
+
+// planUsageStatus renders a get_usage reply as
+// "Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h", plus "reset available" when the
+// account holds an unused rate-limit reset. "" when the reply has no windows.
+func planUsageStatus(raw json.RawMessage, now time.Time) string {
+	var r usageReply
+	if json.Unmarshal(raw, &r) != nil || r.RateLimits == nil {
+		return ""
+	}
+	var parts []string
+	add := func(label string, w *usageWindow) {
+		if w != nil && label != "" {
+			parts = append(parts, fmt.Sprintf("%s %d%%", label, int(math.Round(w.Utilization)))+resetsIn(w.ResetsAt, now))
+		}
+	}
+	add("5h", r.RateLimits.FiveHour)
+	add("7d", r.RateLimits.SevenDay)
+	for i := range r.RateLimits.ModelScoped {
+		add(r.RateLimits.ModelScoped[i].DisplayName, &r.RateLimits.ModelScoped[i])
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	if holdsUnusedReset(r.RateLimits.CedarEmber) {
+		parts = append(parts, "reset available")
+	}
+	return "Claude " + strings.Join(parts, " · ")
+}
+
+// holdsUnusedReset reports whether the usage reply's cedar_ember block (the reset
+// grants /reset_rate_limits claims) holds a grant with resets left.
+// shortcut: the nesting of grants in the block is unobserved (it was null on the probed
+// account), so any resets_left above 0 counts; pin it once a live reply carries a grant.
+func holdsUnusedReset(v any) bool {
+	switch v := v.(type) {
+	case map[string]any:
+		if n, ok := v["resets_left"].(float64); ok && n > 0 {
+			return true
+		}
+		for _, child := range v {
+			if holdsUnusedReset(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if holdsUnusedReset(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func sameFloat(a, b *float64) bool {

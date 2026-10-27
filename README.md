@@ -164,7 +164,7 @@ PiG runs compaction and branch summaries natively. The bridge routes their `cach
 
 ### Plan usage for footers and quota extensions
 
-Claude Code sends a `rate_limit_event` when a usage window changes. The TypeScript bridge passes it to Pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers. PiG's host does not emit that event, so this port writes the headers to the debug log only; the user-visible rate-limit notices stay. This is difference D1 in [docs/compatibility.md](docs/compatibility.md).
+Claude Code sends a `rate_limit_event` when a usage window changes. The TypeScript bridge passes it to Pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers. PiG's host does not emit that event, so this port writes the headers to the debug log only; the user-visible rate-limit notices stay. The bridge also shows the plan's limits in PiG's footer status bar, for example `Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available`. On each event it asks Claude Code for its `/usage` rows (`get_usage`), which name per-model limits; when that fails it shows the event's own windows. This is difference D1 in [docs/compatibility.md](docs/compatibility.md).
 
 ## Known issues
 

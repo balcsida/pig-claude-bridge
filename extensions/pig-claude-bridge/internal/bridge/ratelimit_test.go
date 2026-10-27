@@ -1,6 +1,9 @@
 package bridge
 
 import (
+	"encoding/json"
+	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -228,6 +231,20 @@ func TestHandleRateLimitEvent(t *testing.T) {
 			t.Fatal("dedupe not re-armed")
 		}
 	})
+	t.Run("the usage windows go to the footer status", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		h := &recordingHost{}
+		b.handleRateLimitEvent(h, newQueryContext(), RateLimitInfo{Status: "allowed", UnifiedWindows: map[string]*UsageWindow{
+			"seven_day": {Utilization: fp(0.01)}, "five_hour": {Utilization: fp(0.146)}, "seven_day_opus": nil,
+		}})
+		if got := h.statuses[UsageStatusKey]; got != "Claude 5h 15% · 7d 1%" {
+			t.Fatalf("status = %q", got)
+		}
+		b.handleRateLimitEvent(h, newQueryContext(), RateLimitInfo{Status: "allowed"})
+		if got := h.statuses[UsageStatusKey]; got != "Claude 5h 15% · 7d 1%" {
+			t.Fatalf("an event without windows replaced the status: %q", got)
+		}
+	})
 	t.Run("a notice with no host to show it is dropped", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		q := newQueryContext()
@@ -236,4 +253,98 @@ func TestHandleRateLimitEvent(t *testing.T) {
 			t.Fatal("the rejection must still be recorded")
 		}
 	})
+}
+
+// The rate_limit_event Claude Code sent in a recorded session carries the windows
+// the footer status reads.
+func TestRecordedRateLimitEventFeedsTheUsageStatus(t *testing.T) {
+	data, err := os.ReadFile(fixtureDir + "text.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(data)) {
+		var frame map[string]any
+		if json.Unmarshal([]byte(line), &frame) != nil || frame["type"] != "rate_limit_event" {
+			continue
+		}
+		if got := usageStatus(parseRateLimitInfo(obj(frame["rate_limit_info"])).UnifiedWindows, time.Unix(1789760000, 0)); got != "Claude 5h 14% ↻2h · 7d 1% ↻3d" {
+			t.Fatalf("status = %q", got)
+		}
+		return
+	}
+	t.Fatal("no rate_limit_event in the fixture")
+}
+
+// usageNow is when the get_usage reply below was taken.
+var usageNow = time.Date(2026, 10, 27, 21, 18, 59, 0, time.UTC)
+
+// usageFixture is a get_usage reply from Claude Code 2.1.311, trimmed to the fields
+// planUsageStatus reads and with limits[] dropped, as the server sometimes sends it.
+const usageFixture = `{"subscription_type":"max","rate_limits_available":true,"rate_limits":{
+	"five_hour":{"utilization":6,"resets_at":"2026-10-28T00:50:00.266616+00:00","limit_dollars":null},
+	"seven_day":{"utilization":76,"resets_at":"2026-10-28T06:00:00.266637+00:00","limit_dollars":null},
+	"seven_day_opus":null,
+	"model_scoped":[{"display_name":"Fable","utilization":99,"resets_at":"2026-10-28T06:00:00.266765+00:00"}],
+	"cedar_ember":null}}`
+
+func TestPlanUsageStatus(t *testing.T) {
+	if got := planUsageStatus(json.RawMessage(usageFixture), usageNow); got != "Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h" {
+		t.Fatalf("status = %q", got)
+	}
+	withReset := strings.Replace(usageFixture, `"cedar_ember":null`, `"cedar_ember":{"at_limit":false,"grants":[{"resets_total":1,"resets_left":1,"usable_now":true}]}`, 1)
+	if got := planUsageStatus(json.RawMessage(withReset), usageNow); got != "Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available" {
+		t.Fatalf("status = %q", got)
+	}
+	spent := strings.Replace(usageFixture, `"cedar_ember":null`, `"cedar_ember":{"grants":[{"resets_total":1,"resets_left":0}]}`, 1)
+	if got := planUsageStatus(json.RawMessage(spent), usageNow); strings.Contains(got, "reset") {
+		t.Fatalf("a spent grant shows as available: %q", got)
+	}
+	for _, raw := range []string{"", "null", `{"rate_limits":null}`, `{"rate_limits":{"five_hour":null,"model_scoped":[]}}`} {
+		if got := planUsageStatus(json.RawMessage(raw), usageNow); got != "" {
+			t.Fatalf("%s: status = %q", raw, got)
+		}
+	}
+}
+
+func TestShowUsagePrefersTheCLIsRows(t *testing.T) {
+	windows := map[string]*UsageWindow{"five_hour": {Utilization: fp(0.05), ResetsAt: fp(float64(usageNow.Add(45 * time.Minute).Unix()))}}
+	t.Run("the get_usage rows win", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		b.deps.Now = func() time.Time { return usageNow }
+		c, h := newFakeClient(), &recordingHost{}
+		c.usage = json.RawMessage(usageFixture)
+		b.showUsage(h, c, windows)
+		b.queries.Wait()
+		if got := h.statuses[UsageStatusKey]; got != "Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h" {
+			t.Fatalf("status = %q", got)
+		}
+	})
+	t.Run("a failed get_usage falls back to the event's windows", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		b.deps.Now = func() time.Time { return usageNow }
+		c, h := newFakeClient(), &recordingHost{}
+		c.usageErr = errors.New("claude process closed before responding")
+		b.showUsage(h, c, windows)
+		b.queries.Wait()
+		if got := h.statuses[UsageStatusKey]; got != "Claude 5h 5% ↻45m" {
+			t.Fatalf("status = %q", got)
+		}
+	})
+}
+
+func TestResetsIn(t *testing.T) {
+	for _, c := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{-time.Minute, ""}, {0, ""}, {20 * time.Second, " ↻1m"}, {59 * time.Minute, " ↻59m"},
+		{time.Hour, " ↻1h"}, {3*time.Hour + 31*time.Minute, " ↻3h"}, {47 * time.Hour, " ↻1d"}, {6*24*time.Hour + 23*time.Hour, " ↻6d"},
+	} {
+		if got := resetsIn(usageNow.Add(c.d), usageNow); got != c.want {
+			t.Errorf("%v: %q, want %q", c.d, got, c.want)
+		}
+	}
+	if got := resetsIn(time.Time{}, usageNow); got != "" {
+		t.Errorf("unknown reset: %q", got)
+	}
 }

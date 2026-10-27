@@ -39,6 +39,7 @@ type Client interface {
 	WriteUser(msg UserMessage) error
 	EndInput() error
 	Interrupt(ctx context.Context) (json.RawMessage, error)
+	Usage(ctx context.Context) (json.RawMessage, error)
 	Close(ctx context.Context) error
 	Wait() error
 	StderrTail() string

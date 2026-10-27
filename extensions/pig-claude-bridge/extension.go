@@ -26,6 +26,12 @@ func (h sdkHost) Notify(message, level string) {
 	h.ctx.Notify(message, level)
 }
 
+// SetStatus drops the status if the context is stale, as Notify does.
+func (h sdkHost) SetStatus(key, text string) {
+	defer func() { _ = recover() }()
+	h.ctx.SetStatus(key, text)
+}
+
 func (h sdkHost) SessionID() (string, error) { return h.ctx.SessionManager().GetSessionID() }
 func (h sdkHost) Cwd() string                { return h.ctx.Cwd() }
 

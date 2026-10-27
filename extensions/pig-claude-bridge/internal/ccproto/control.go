@@ -124,6 +124,12 @@ func (p *Process) Interrupt(ctx context.Context) (json.RawMessage, error) {
 	return p.request(ctx, map[string]any{"subtype": "interrupt", "cancel_queued": true})
 }
 
+// Usage sends get_usage and returns the raw /usage payload: the plan's labelled limit rows, among others.
+// skip_behaviors skips the CLI's scan of local transcripts, which a usage meter does not need.
+func (p *Process) Usage(ctx context.Context) (json.RawMessage, error) {
+	return p.request(ctx, map[string]any{"subtype": "get_usage", "skip_behaviors": true})
+}
+
 func (p *Process) sendSuccess(id string, payload any) {
 	_ = p.writeJSON(map[string]any{"type": "control_response", "response": map[string]any{
 		"subtype": "success", "request_id": id, "response": payload}})

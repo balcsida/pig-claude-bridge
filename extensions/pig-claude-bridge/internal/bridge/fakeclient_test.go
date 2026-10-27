@@ -38,6 +38,9 @@ type fakeClient struct {
 	// onInterrupt and onClose, when set, run first in Interrupt and Close; onWait
 	// runs in Wait once the process has exited.
 	onInterrupt, onClose, onWait func()
+	// usage and usageErr are what Usage returns.
+	usage    json.RawMessage
+	usageErr error
 }
 
 type scriptItem struct {
@@ -161,6 +164,12 @@ func (f *fakeClient) Wait() error {
 		hook()
 	}
 	return err
+}
+
+func (f *fakeClient) Usage(context.Context) (json.RawMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.usage, f.usageErr
 }
 
 func (f *fakeClient) StderrTail() string {

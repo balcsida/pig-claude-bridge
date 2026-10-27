@@ -1158,3 +1158,47 @@ func TestIncludeGitInstructionsFalseStripsGitStatusAndKeepsThePresetStaticAcross
 		t.Error("leading user message changed across a git transition despite includeGitInstructions:false")
 	}
 }
+
+func TestGetUsageAnswersWithKeyedWindows(t *testing.T) {
+	// The footer's usage status reads get_usage's rate_limits.five_hour, seven_day and model_scoped
+	// (display_name, utilization in percent, ISO resets_at), not limits[], which the server sometimes omits.
+	// The CLI answers before any prompt.
+	p := startLive(t, providerOptions(t), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	raw, err := p.Usage(ctx)
+	if err != nil {
+		t.Fatalf("get_usage: %v", err)
+	}
+	var reply map[string]any
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		t.Fatalf("get_usage reply: %v", err)
+	}
+	limits, ok := at(reply, "rate_limits").(map[string]any)
+	if !ok {
+		t.Fatalf("get_usage reply has no rate_limits: %s", raw)
+	}
+	window := func(name string, w any) {
+		if _, ok := at(w, "utilization").(float64); !ok {
+			t.Errorf("%s lacks a numeric utilization: %v", name, w)
+		}
+		if _, err := time.Parse(time.RFC3339, str(at(w, "resets_at"))); err != nil {
+			t.Errorf("%s resets_at is not RFC 3339: %v", name, w)
+		}
+	}
+	window("five_hour", limits["five_hour"])
+	window("seven_day", limits["seven_day"])
+	scoped, ok := limits["model_scoped"].([]any)
+	if !ok {
+		t.Errorf("rate_limits.model_scoped is not a list: %v", limits["model_scoped"])
+	}
+	for _, w := range scoped {
+		if str(at(w, "display_name")) == "" {
+			t.Errorf("a model_scoped window has no display_name: %v", w)
+		}
+		window("model_scoped", w)
+	}
+	if _, present := limits["cedar_ember"]; !present {
+		t.Error("rate_limits no longer carries cedar_ember, the reset-grant block")
+	}
+}
