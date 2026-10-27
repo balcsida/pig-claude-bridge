@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-27
+
+- feat(bridge): the footer status bar shows the Claude plan's usage limits, including per-model ones such as Fable, and an unused rate-limit reset (`Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available`). Each `rate_limit_event` asks the live CLI for its `get_usage` rows and falls back to the event's windows.
+- docs(readme): install from npm (`pig install npm:pig-claude-bridge`), with update, pinning and `main` alternatives.
+
+## 0.1.0 - 2026-10-26
+
 First release candidate: a native Go port of [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) at commit 6aa276a for PiG 0.5.3, with Claude Code 2.1.310 and cc-session-io 0.4.0 as the reference. Every difference is listed in docs/compatibility.md.
 
 - feat(provider): the `claude-bridge` provider serves Claude models from a static catalog registered when the extension loads, with 1M-context eligibility, `[1m]` suffixes and the `plan`, `longContextExtraUsage` and `forceTwoHundredK` settings.
@@ -11,7 +18,6 @@ First release candidate: a native Go port of [pi-claude-bridge](https://github.c
 - feat(mcptools): in-process MCP server over `mcp_message` that serves PiG's tools to Claude Code, with root-schema flattening for `anyOf`/`oneOf`/`allOf` tools.
 - feat(promptcapture): system prompt recording and rejection rules with the TypeScript error texts, so a foreign prompt is refused instead of sent.
 - feat(bridge): per-session state and sync decisions (clean start, reuse, rebuild), query lifecycle, parked tool calls, steering, abort, stream mapping, usage, rate-limit notices and isolated queries for compaction and branch summaries.
-- feat(bridge): the footer status bar shows the Claude plan's usage limits, including per-model ones such as Fable, and an unused rate-limit reset (`Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available`). Each `rate_limit_event` asks the live CLI for its `get_usage` rows and falls back to the event's windows.
 - feat(askclaude): the opt-in AskClaude tool with read, full and none modes, isolated and remembered sessions, rendered as lines.
 - feat(config): `claude-bridge.json` in PiG's agent directory and project config directory, with the TypeScript keys and defaults, `CLAUDE_BRIDGE_DEBUG` and `CLAUDE_BRIDGE_DEBUG_PATH`.
 - fix(bridge): tag a compaction rebuild with the reason and retry state (`session_compact:<reason>:willRetry=<bool>`), as the TypeScript does.
