@@ -13,7 +13,7 @@ A native Go extension for [PiG](https://github.com/MichaelKinsy/PiG) that integr
 pig install npm:pig-claude-bridge
 ```
 
-Update it with `pig update npm:pig-claude-bridge`. To pin a release, install `npm:pig-claude-bridge@0.2.0`; to follow `main` instead of releases, install `git:github.com/balcsida/pig-claude-bridge`.
+Update it with `pig update npm:pig-claude-bridge`. To follow `main` instead of releases, install `git:github.com/balcsida/pig-claude-bridge`.
 
 Requirements:
 
