@@ -2,10 +2,12 @@
 
 ## Unreleased
 
-## 0.2.0 - 2026-10-27
+## 0.2.0 - 2026-10-28
 
 - feat(bridge): the footer status bar shows the Claude plan's usage limits, including per-model ones such as Fable, and an unused rate-limit reset (`Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available`). Each `rate_limit_event` asks the live CLI for its `get_usage` rows and falls back to the event's windows.
 - docs(readme): install from npm (`pig install npm:pig-claude-bridge`), with the update command and a `main` alternative.
+- build: the package has a `description`, which PiG's package catalog requires.
+- ci: a signed `v*.*.*` tag on `main` publishes the package to npm with provenance and creates the GitHub release.
 
 ## 0.1.0 - 2026-10-26
 
