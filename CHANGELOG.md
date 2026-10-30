@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-30
+
+- chore(release): republish 0.2.0's changes; the `v0.2.0` tag predates the release workflow, so 0.2.0 never reached npm.
+
 ## 0.2.0 - 2026-10-28
 
 - feat(bridge): the footer status bar shows the Claude plan's usage limits, including per-model ones such as Fable, and an unused rate-limit reset (`Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available`). Each `rate_limit_event` asks the live CLI for its `get_usage` rows and falls back to the event's windows.
