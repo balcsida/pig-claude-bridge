@@ -18,7 +18,7 @@ const (
 
 // LongContextSettings carries the plan facts that decide whether a [1m] id is served.
 type LongContextSettings struct {
-	Plan                  string // "pro" or "max"
+	Plan                  string // "pro", "max", "ultra", "team" or "enterprise"
 	LongContextExtraUsage bool
 	// ForceTwoHundredK lists model ids whose declared 1M context Claude Code
 	// turned out not to serve; they stay on the bare id at 200K.
@@ -58,8 +58,11 @@ var measuredOneM = map[string]bool{
 // planGatedOneM holds the measured exceptions: pi-ai declares 1M and the [1m]
 // id works, but only when the plan allows it.
 var planGatedOneM = map[string]func(LongContextSettings) bool{
-	// [1m] measured 1M on Max plan / extra usage; 429 on Pro without it.
-	"claude-opus-4-6": func(s LongContextSettings) bool { return s.Plan == "max" || s.LongContextExtraUsage },
+	// [1m] measured 1M on Max plan / extra usage; 429 on Pro without it. Max, Ultra, Team (Standard
+	// and Premium) and Enterprise include it, per code.claude.com/docs/en/model-config#extended-context.
+	"claude-opus-4-6": func(s LongContextSettings) bool {
+		return slices.Contains([]string{"max", "ultra", "team", "enterprise"}, s.Plan) || s.LongContextExtraUsage
+	},
 	// [1m] measured 1M with extra usage only.
 	"claude-sonnet-4-6": func(s LongContextSettings) bool { return s.LongContextExtraUsage },
 }

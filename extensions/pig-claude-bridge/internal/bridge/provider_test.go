@@ -1161,3 +1161,32 @@ func TestEmptyPromptDiagnosticCarriesTheTypeScriptFields(t *testing.T) {
 		}
 	}
 }
+
+// TestFastModeReachesClaudeCodeSettingsAndTogglesPerTurn pins provider.fastMode and
+// SetFastMode: each turn spawns Claude Code with the mode current at that turn.
+func TestFastModeReachesClaudeCodeSettingsAndTogglesPerTurn(t *testing.T) {
+	on := true
+	h := newProviderHarness(t, func(d *Deps) { d.Config.Provider.FastMode = &on })
+	cwd := t.TempDir()
+	h.host.cwd, h.host.sessionID = cwd, "pi-fast"
+	h.b.OnSessionStart(h.host, "startup")
+	h.b.OnBeforeAgentStart(h.host, "SYSTEM", nil)
+	model := map[string]any{"api": "anthropic-messages", "provider": "anthropic", "id": "claude-opus-5-5"}
+	turn := func(id string, history ...map[string]any) any {
+		h.script(answers(id, "ok"))
+		stream, err := h.b.StreamSimple(context.Background(), h.host, model,
+			map[string]any{"systemPrompt": "SYSTEM", "messages": msgs(history...)}, map[string]any{"sessionId": "pi-fast"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		finalOf(t, stream)
+		return h.lastSpawn().opts.Settings["fastMode"]
+	}
+	if got := turn("cc-fast-1", userMsg("hi")); got != true {
+		t.Fatalf("fastMode with provider.fastMode=true = %v, want true", got)
+	}
+	h.b.SetFastMode(h.host, false)
+	if got := turn("cc-fast-2", userMsg("hi"), sayMsg("ok"), userMsg("again")); got != nil {
+		t.Fatalf("fastMode after SetFastMode(false) = %v, want absent", got)
+	}
+}

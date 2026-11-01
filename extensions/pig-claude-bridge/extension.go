@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	sdk "github.com/MichaelKinsy/PiG/extensions/sdk"
@@ -30,6 +31,12 @@ func (h sdkHost) Notify(message, level string) {
 func (h sdkHost) SetStatus(key, text string) {
 	defer func() { _ = recover() }()
 	h.ctx.SetStatus(key, text)
+}
+
+// ClearStatus drops the call if the context is stale, as SetStatus does.
+func (h sdkHost) ClearStatus(key string) {
+	defer func() { _ = recover() }()
+	h.ctx.ClearStatus(key)
 }
 
 func (h sdkHost) SessionID() (string, error) { return h.ctx.SessionManager().GetSessionID() }
@@ -124,6 +131,17 @@ func Extension() *sdk.Extension {
 	configDirName, _ := sdk.ConfigDirName()
 	cwd, _ := os.Getwd()
 	cfg := config.Load(agentDir, cwd, configDirName)
+	// Detected before the provider registers, since the plan decides which models get 1M.
+	// Skipped outside a host, so validate-only installs and tests never spawn claude.
+	if agentDir != "" && cfg.Provider.Plan == nil {
+		plan, err := bridge.DetectPlan(context.Background(), cfg.Provider)
+		if err != nil {
+			cfg.Problems = append(cfg.Problems, fmt.Sprintf("claude-bridge: plan detection failed: %v", err))
+		}
+		if plan != "" {
+			cfg.Provider.Plan = &plan
+		}
+	}
 	b := bridge.New(bridge.Deps{
 		Config:        cfg,
 		AgentDir:      agentDir,
@@ -148,6 +166,26 @@ func Extension() *sdk.Extension {
 		"api":          "claude-bridge",
 		"models":       providerModels(cfg.Provider),
 		"streamSimple": sdk.ProviderStreamSimpleFunc(streamSimple),
+	})
+
+	ext.Command("claude-fast", "Toggle Claude Code fast mode for this session (on|off)", func(ctx sdk.Context, args string) error {
+		host := sdkHost{ctx}
+		switch strings.TrimSpace(args) {
+		case "":
+			b.SetFastMode(host, !b.FastMode())
+		case "on":
+			b.SetFastMode(host, true)
+		case "off":
+			b.SetFastMode(host, false)
+		default:
+			return fmt.Errorf("usage: /claude-fast [on|off]")
+		}
+		state := "off"
+		if b.FastMode() {
+			state = "on (from the next turn, on models that support it)"
+		}
+		host.Notify("Claude fast mode "+state, "info")
+		return nil
 	})
 
 	if a := cfg.AskClaude; a != nil && a.Enabled != nil && *a.Enabled {

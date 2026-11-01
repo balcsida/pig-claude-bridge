@@ -71,6 +71,12 @@ type Bridge struct {
 	// captures is the prompt-capture registry, guarded by its own mutex.
 	captures    *promptcapture.Captures
 	longContext models.LongContextSettings
+	// fastMode adds fastMode to Claude Code's --settings; /claude-fast flips it mid-session.
+	fastMode atomic.Bool
+	// plan is provider.plan as configured or detected, "" when unknown; the footer shows it.
+	plan string
+	// lastUsage is the usage windows the footer last showed, guarded by mu.
+	lastUsage string
 
 	// queries tracks the goroutines a provider call starts, so a shutdown or a test
 	// can wait for them.
@@ -94,6 +100,12 @@ func New(d Deps) *Bridge {
 		contexts:         map[*QueryContext]struct{}{},
 		cwds:             map[string]string{},
 		longContext:      LongContextSettings(d.Config.Provider),
+	}
+	if p := d.Config.Provider; p != nil && p.FastMode != nil {
+		b.fastMode.Store(*p.FastMode)
+	}
+	if p := d.Config.Provider; p != nil && p.Plan != nil {
+		b.plan = *p.Plan
 	}
 	b.captures = promptcapture.NewCaptures(0, b.debugCaptureMiss)
 	b.queueStartupNotices()

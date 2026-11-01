@@ -212,15 +212,18 @@ func (b *Bridge) handleRateLimitEvent(host Host, q *QueryContext, info RateLimit
 
 // showUsage puts the plan's usage in the footer status. The event's windows lack the
 // per-model limits' names, so it asks the live CLI for its /usage rows and falls back
-// to the windows when there is no client or the CLI does not answer.
+// to the windows when there is no client or the CLI does not answer. An empty usage
+// keeps the last one shown.
 func (b *Bridge) showUsage(host Host, client ccproto.Client, windows map[string]*UsageWindow) {
-	s, ok := host.(StatusSetter)
-	if !ok {
+	if _, ok := host.(StatusSetter); !ok {
 		return
 	}
-	set := func(status string) {
-		if status != "" {
-			s.SetStatus(UsageStatusKey, status)
+	set := func(usage string) {
+		if usage != "" {
+			b.mu.Lock()
+			b.lastUsage = usage
+			b.mu.Unlock()
+			b.showStatus(host)
 		}
 	}
 	if client == nil {
@@ -242,13 +245,43 @@ func (b *Bridge) showUsage(host Host, client ccproto.Client, windows map[string]
 	}()
 }
 
-// UsageStatusKey is the footer status entry that shows the plan's usage windows.
+// UsageStatusKey is the footer status entry that shows the plan, fast mode and usage windows.
 const UsageStatusKey = "claude-usage"
 
 // StatusSetter is a Host that can show a footer status; hosts without one skip it.
-type StatusSetter interface{ SetStatus(key, text string) }
+type StatusSetter interface {
+	SetStatus(key, text string)
+	ClearStatus(key string)
+}
 
-// usageStatus renders the unified windows as "Claude 5h 14% ↻3h · 7d 1% ↻2d", or ""
+// showStatus renders the footer entry as "Claude Max · fast · 5h 6% ↻3h · 7d 76% ↻8h": the
+// plan when configured or detected, "fast" while fast mode is on, then the last usage
+// windows. With none of the three the entry is removed.
+func (b *Bridge) showStatus(host any) {
+	s, ok := host.(StatusSetter)
+	if !ok {
+		return
+	}
+	var parts []string
+	if b.plan != "" {
+		parts = append(parts, strings.ToUpper(b.plan[:1])+b.plan[1:])
+	}
+	if b.fastMode.Load() {
+		parts = append(parts, "fast")
+	}
+	b.mu.Lock()
+	if b.lastUsage != "" {
+		parts = append(parts, b.lastUsage)
+	}
+	b.mu.Unlock()
+	if len(parts) == 0 {
+		s.ClearStatus(UsageStatusKey)
+		return
+	}
+	s.SetStatus(UsageStatusKey, "Claude "+strings.Join(parts, " · "))
+}
+
+// usageStatus renders the unified windows as "5h 14% ↻3h · 7d 1% ↻2d", or ""
 // when no window carries a utilization.
 func usageStatus(windows map[string]*UsageWindow, now time.Time) string {
 	var parts []string
@@ -267,10 +300,7 @@ func usageStatus(windows map[string]*UsageWindow, now time.Time) string {
 		}
 		parts = append(parts, fmt.Sprintf("%s %d%%", label, int(math.Floor(*w.Utilization*100+0.5)))+resetsIn(resetsAt, now))
 	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "Claude " + strings.Join(parts, " · ")
+	return strings.Join(parts, " · ")
 }
 
 // resetsIn is " ↻3h": the time to a window's reset, floored to its largest unit as the
@@ -307,7 +337,7 @@ type usageReply struct {
 }
 
 // planUsageStatus renders a get_usage reply as
-// "Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h", plus "reset available" when the
+// "5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h", plus "reset available" when the
 // account holds an unused rate-limit reset. "" when the reply has no windows.
 func planUsageStatus(raw json.RawMessage, now time.Time) string {
 	var r usageReply
@@ -331,7 +361,7 @@ func planUsageStatus(raw json.RawMessage, now time.Time) string {
 	if holdsUnusedReset(r.RateLimits.CedarEmber) {
 		parts = append(parts, "reset available")
 	}
-	return "Claude " + strings.Join(parts, " · ")
+	return strings.Join(parts, " · ")
 }
 
 // holdsUnusedReset reports whether the usage reply's cedar_ember block (the reset

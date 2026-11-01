@@ -3,6 +3,7 @@ package ccproto
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -125,5 +126,37 @@ func TestCommandLineRunsScriptsThroughNode(t *testing.T) {
 	t.Setenv("PATH", "")
 	if _, _, err := commandLine("/opt/cc/cli.js"); err == nil || !strings.Contains(err.Error(), "node") {
 		t.Errorf("missing node: err = %v", err)
+	}
+}
+
+// fakeAuthStatus is a claude whose `auth status --json` prints out and exits with code.
+func fakeAuthStatus(t *testing.T, out string, code int) string {
+	t.Helper()
+	exe := filepath.Join(t.TempDir(), "claude")
+	script := fmt.Sprintf("#!/bin/sh\n[ \"$*\" = 'auth status --json' ] || exit 9\ncat <<'JSON'\n%s\nJSON\nexit %d\n", out, code)
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
+func TestSubscriptionType(t *testing.T) {
+	for _, tc := range []struct {
+		name, out string
+		code      int
+		want      string
+		wantErr   bool
+	}{
+		{"subscription", `{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}`, 0, "max", false},
+		// Recorded from Claude Code 2.1.316 with an empty CLAUDE_CONFIG_DIR: exit 1, JSON still printed.
+		{"logged out", `{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}`, 1, "", false},
+		{"not json", `boom`, 1, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SubscriptionType(context.Background(), fakeAuthStatus(t, tc.out, tc.code))
+			if got != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("got %q, %v; want %q, error %t", got, err, tc.want, tc.wantErr)
+			}
+		})
 	}
 }

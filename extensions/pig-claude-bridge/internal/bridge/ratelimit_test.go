@@ -267,7 +267,7 @@ func TestRecordedRateLimitEventFeedsTheUsageStatus(t *testing.T) {
 		if json.Unmarshal([]byte(line), &frame) != nil || frame["type"] != "rate_limit_event" {
 			continue
 		}
-		if got := usageStatus(parseRateLimitInfo(obj(frame["rate_limit_info"])).UnifiedWindows, time.Unix(1789760000, 0)); got != "Claude 5h 14% ↻2h · 7d 1% ↻3d" {
+		if got := usageStatus(parseRateLimitInfo(obj(frame["rate_limit_info"])).UnifiedWindows, time.Unix(1789760000, 0)); got != "5h 14% ↻2h · 7d 1% ↻3d" {
 			t.Fatalf("status = %q", got)
 		}
 		return
@@ -288,11 +288,11 @@ const usageFixture = `{"subscription_type":"max","rate_limits_available":true,"r
 	"cedar_ember":null}}`
 
 func TestPlanUsageStatus(t *testing.T) {
-	if got := planUsageStatus(json.RawMessage(usageFixture), usageNow); got != "Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h" {
+	if got := planUsageStatus(json.RawMessage(usageFixture), usageNow); got != "5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h" {
 		t.Fatalf("status = %q", got)
 	}
 	withReset := strings.Replace(usageFixture, `"cedar_ember":null`, `"cedar_ember":{"at_limit":false,"grants":[{"resets_total":1,"resets_left":1,"usable_now":true}]}`, 1)
-	if got := planUsageStatus(json.RawMessage(withReset), usageNow); got != "Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available" {
+	if got := planUsageStatus(json.RawMessage(withReset), usageNow); got != "5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available" {
 		t.Fatalf("status = %q", got)
 	}
 	spent := strings.Replace(usageFixture, `"cedar_ember":null`, `"cedar_ember":{"grants":[{"resets_total":1,"resets_left":0}]}`, 1)
@@ -346,5 +346,35 @@ func TestResetsIn(t *testing.T) {
 	}
 	if got := resetsIn(time.Time{}, usageNow); got != "" {
 		t.Errorf("unknown reset: %q", got)
+	}
+}
+
+func TestFooterShowsThePlanAndFastModeBeforeTheUsage(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	h := &recordingHost{}
+	b.SetFastMode(h, true)
+	if got := h.statuses[UsageStatusKey]; got != "Claude fast" {
+		t.Fatalf("fast mode alone: status = %q", got)
+	}
+	b.SetFastMode(h, false)
+	if _, shown := h.statuses[UsageStatusKey]; shown {
+		t.Fatalf("nothing to show left the entry: %q", h.statuses[UsageStatusKey])
+	}
+
+	b.plan = "max"
+	b.OnSessionStart(h, "startup")
+	if got := h.statuses[UsageStatusKey]; got != "Claude Max" {
+		t.Fatalf("at session start: status = %q", got)
+	}
+	b.SetFastMode(h, true)
+	b.handleRateLimitEvent(h, newQueryContext(), RateLimitInfo{Status: "allowed", UnifiedWindows: map[string]*UsageWindow{
+		"five_hour": {Utilization: fp(0.146)},
+	}})
+	if got := h.statuses[UsageStatusKey]; got != "Claude Max · fast · 5h 15%" {
+		t.Fatalf("with usage: status = %q", got)
+	}
+	b.SetFastMode(h, false)
+	if got := h.statuses[UsageStatusKey]; got != "Claude Max · 5h 15%" {
+		t.Fatalf("fast mode off keeps plan and usage: status = %q", got)
 	}
 }

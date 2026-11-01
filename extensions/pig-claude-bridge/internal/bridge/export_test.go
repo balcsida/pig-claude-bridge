@@ -23,6 +23,8 @@ func (h *recordingHost) SetStatus(key, text string) {
 	h.statuses[key] = text
 }
 
+func (h *recordingHost) ClearStatus(key string) { delete(h.statuses, key) }
+
 func (h *recordingHost) Notify(message, level string) {
 	h.notices = append(h.notices, level+": "+message)
 }

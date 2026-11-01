@@ -1202,3 +1202,33 @@ func TestGetUsageAnswersWithKeyedWindows(t *testing.T) {
 		t.Error("rate_limits no longer carries cedar_ember, the reset-grant block")
 	}
 }
+
+func TestFastModeNeedsTheSettingsOptInUnderTheSDK(t *testing.T) {
+	// The bridge's fast mode is fastMode:true in --settings. Without it an SDK session reports fast mode
+	// off with reason sdk_opt_in_required; with it, init reports it on for a model that has fast mode.
+	// Needs a fast-mode model (Opus 5.5 here), so it spends a little Opus quota.
+	for _, tc := range []struct {
+		settings map[string]any
+		want     string
+	}{{nil, "off"}, {map[string]any{"fastMode": true}, "on"}} {
+		o := providerOptions(t)
+		o.Model, o.Settings = "claude-opus-5-5", tc.settings
+		if got := initOnly(t, startLive(t, o, nil))["fast_mode_state"]; got != tc.want {
+			t.Errorf("settings %v: init fast_mode_state = %v, want %q", tc.settings, got, tc.want)
+		}
+	}
+}
+
+func TestAuthStatusJSONNamesTheSubscriptionType(t *testing.T) {
+	// The bridge detects the plan from `claude auth status --json`. Needs a claude.ai login.
+	sub, err := SubscriptionType(context.Background(), claudeOnPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub == "" {
+		t.Skip("not logged in with a Claude subscription")
+	}
+	if !slicesContain([]any{"pro", "max", "team", "enterprise", "ultra"}, sub) {
+		t.Errorf("subscriptionType %q is not a known plan", sub)
+	}
+}
