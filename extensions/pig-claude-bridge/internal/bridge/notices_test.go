@@ -1,7 +1,10 @@
 package bridge
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -130,4 +133,18 @@ func TestReportLeaks(t *testing.T) {
 			t.Fatal("nothing should be logged")
 		}
 	})
+}
+
+func TestDetectPlanKeepsOnlyPlansThatSayWhetherOpusGets1M(t *testing.T) {
+	for sub, want := range map[string]string{"pro": "pro", "max": "max", "ultra": "ultra", "team": "", "enterprise": "", "": ""} {
+		exe := filepath.Join(t.TempDir(), "claude")
+		script := fmt.Sprintf("#!/bin/sh\necho '{\"subscriptionType\":%q}'\n", sub)
+		if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, err := DetectPlan(context.Background(), &config.ProviderConfig{PathToClaudeCodeExecutable: &exe})
+		if err != nil || got != want {
+			t.Errorf("subscriptionType %q: got %q, %v; want %q", sub, got, err, want)
+		}
+	}
 }

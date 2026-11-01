@@ -117,6 +117,7 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 	// the skills block, the only channel. The preset prompt is unconditional: without it
 	// the child lacks the tool and permission guidance the bridge relies on.
 	settings := config.ClaudeCodeSettings(b.deps.Config.Provider)
+	b.applyFastMode(settings)
 	settings["claudeMdExcludes"] = claudeMdExcludes
 	debugFile, onStderr := b.cliDebugOptions("askclaude")
 	opts := ccproto.Options{

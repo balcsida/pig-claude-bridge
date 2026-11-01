@@ -4,6 +4,8 @@ package ccproto
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -73,6 +75,31 @@ func Version(ctx context.Context, exe string) (string, error) {
 		return "", fmt.Errorf("parse %s --version output %q: no leading semver", exe, strings.TrimSpace(string(out)))
 	}
 	return m[1], nil
+}
+
+// AuthStatusTimeout bounds `claude auth status`: it runs while the extension loads, which must not hang.
+var AuthStatusTimeout = 5 * time.Second
+
+// SubscriptionType runs `<exe> auth status --json` and returns its subscriptionType ("pro", "max",
+// "team", "enterprise"); "" when the login is not a Claude subscription.
+func SubscriptionType(ctx context.Context, exe string) (string, error) {
+	probe, cancel := context.WithTimeout(ctx, AuthStatusTimeout)
+	defer cancel()
+	name, args, err := commandLine(exe, "auth", "status", "--json")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(probe, name, args...)
+	cmd.WaitDelay = time.Second
+	// Logged out exits non-zero but still prints the JSON, so the output decides.
+	out, runErr := cmd.Output()
+	var status struct {
+		SubscriptionType string `json:"subscriptionType"`
+	}
+	if err := json.Unmarshal(out, &status); err != nil {
+		return "", fmt.Errorf("run %s auth status --json: %v (output %q)", exe, errors.Join(runErr, err), strings.TrimSpace(string(out)))
+	}
+	return status.SubscriptionType, nil
 }
 
 // OlderThan reports whether version is numerically older than minimum; unparsable input is not older.

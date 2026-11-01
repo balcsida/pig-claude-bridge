@@ -32,7 +32,19 @@ Behind the scenes, PiG's tools are bridged to Claude Code but everything works l
 
 The model list is a static table generated from the Anthropic catalog of `@earendil-works/pi-ai` 1.2.0 (`scripts/dev/gen-catalog.mjs`) and registered when the extension loads; it does not follow later catalog updates. Dated snapshot ids are not shown. See [docs/compatibility.md](docs/compatibility.md) (D5).
 
-**1M context:** Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5.5/5 get 1M context. Opus 4.6 gets 1M only on a Max plan or with Extra Usage, and Sonnet 4.6 only with Extra Usage: set `provider.plan` and/or `provider.longContextExtraUsage` as described in [Configuration](#configuration).
+**1M context:** Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5.5/5 get 1M context. Opus 4.6 gets 1M only on a Max plan or with Extra Usage, and Sonnet 4.6 only with Extra Usage: the extension detects a Max plan by itself (see `provider.plan` in [Configuration](#configuration)); set `provider.longContextExtraUsage` for Extra Usage.
+
+**Fast mode:** `/claude-fast` turns Claude Code's fast mode on or off for the rest of the session (`/claude-fast on`, `/claude-fast off`, or no argument to toggle); set `provider.fastMode` to `true` to start every session with it on. It takes effect from the next turn, on models that have fast mode (Opus 5.5, for example); other models ignore it. While it is on, the footer shows `fast` (see [Footer status](#footer-status)).
+
+### Footer status
+
+The bridge keeps one entry in PiG's footer status bar, for example `Claude Max · fast · 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h`:
+
+- the plan (`Pro`, `Max`, `Ultra`, ...), when `provider.plan` is set or the plan was detected; nothing when it is unknown.
+- `fast` while fast mode is on; nothing when it is off.
+- the plan's usage limits, once Claude Code reports them (see [Plan usage for footers and quota extensions](#plan-usage-for-footers-and-quota-extensions)).
+
+The plan shows from session start, fast mode as soon as `/claude-fast` changes it, and the usage after the first turn.
 
 ## AskClaude Tool
 
@@ -57,6 +69,7 @@ The extension asks PiG for both directories; nothing is hard-coded. A missing or
   },
   "provider": {
     "plan": "max",
+    "fastMode": false,
     "longContextExtraUsage": false,
     "strictMcpConfig": true,
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
@@ -75,14 +88,15 @@ The extension asks PiG for both directories; nothing is hard-coded. A missing or
 - `appendSkills`: forward PiG's skills block into the system prompt (default `true`)
 
 `provider`:
-- `plan` (default `"pro"`): set to `"max"` if you have a Max (or Team Premium/Enterprise) Anthropic plan. This enables Opus with 1M context.
+- `plan`: `"pro"`, `"max"` or `"ultra"`. `"max"` and `"ultra"` enable Opus 4.6 with 1M context. Unset, the extension asks `claude auth status --json` once at load and uses a Pro, Max or Ultra subscription it reports; otherwise it falls back to `"pro"`. Team and Enterprise don't say whether the seat is Premium, so set `"max"` yourself on Team Premium/Enterprise.
+- `fastMode` (default `false`): start every session with Claude Code's fast mode on. `/claude-fast` changes it for the current session.
 - `longContextExtraUsage`: set to `true` to enable 1M context models even if they cost money through Extra Usage on your plan. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro.
 - `forceTwoHundredK`: array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if the catalog declares a model at 1M but Claude Code won't serve it on your plan.
 - `strictMcpConfig`: block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled`: enable Claude Code's auto-memory system (default `false`)
 - `pathToClaudeCodeExecutable`: path to the `claude` binary, used instead of the one on `PATH`. A path ending in `.js`, `.mjs` or `.ts` is run through `node`, as the Agent SDK does.
 
-**Notices:** the startup notice, shown at the first bridge turn in the TUI only (it stays pending in RPC, JSON and print mode), points out when `provider.plan` is unset and records `startupNoticeShown` (a date) in the global config. A deprecation notice on first use of AskClaude records its display date as `askClaudeDeprecationShown`. The extension rewrites the global file only to add these keys and leaves every other key as it was; an unparseable global file is left alone.
+**Notices:** the startup notice, shown at the first bridge turn in the TUI only (it stays pending in RPC, JSON and print mode), points out when `provider.plan` is unset and was not detected, and records `startupNoticeShown` (a date) in the global config. A deprecation notice on first use of AskClaude records its display date as `askClaudeDeprecationShown`. The extension rewrites the global file only to add these keys and leaves every other key as it was; an unparseable global file is left alone.
 
 ## Why Go
 
@@ -166,7 +180,7 @@ PiG runs compaction and branch summaries natively. The bridge routes their `cach
 
 ### Plan usage for footers and quota extensions
 
-Claude Code sends a `rate_limit_event` when a usage window changes. The TypeScript bridge passes it to Pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers. PiG's host does not emit that event, so this port writes the headers to the debug log only; the user-visible rate-limit notices stay. The bridge also shows the plan's limits in PiG's footer status bar, for example `Claude 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available`. On each event it asks Claude Code for its `/usage` rows (`get_usage`), which name per-model limits; when that fails it shows the event's own windows. This is difference D1 in [docs/compatibility.md](docs/compatibility.md).
+Claude Code sends a `rate_limit_event` when a usage window changes. The TypeScript bridge passes it to Pi's `after_provider_response` event as `anthropic-ratelimit-unified-*` headers. PiG's host does not emit that event, so this port writes the headers to the debug log only; the user-visible rate-limit notices stay. The bridge also shows the plan's limits in PiG's footer status bar, after the plan and fast mode (see [Footer status](#footer-status)), for example `Claude Max · 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h · reset available`. On each event it asks Claude Code for its `/usage` rows (`get_usage`), which name per-model limits; when that fails it shows the event's own windows. This is difference D1 in [docs/compatibility.md](docs/compatibility.md).
 
 ## Known issues
 

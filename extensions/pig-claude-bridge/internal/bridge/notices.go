@@ -1,9 +1,11 @@
 package bridge
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccproto"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/config"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/models"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/promptcapture"
@@ -100,6 +102,45 @@ func LongContextSettings(p *config.ProviderConfig) models.LongContextSettings {
 	}
 	s.ForceTwoHundredK = p.ForceTwoHundredK
 	return s
+}
+
+// DetectPlan asks Claude Code for the subscription behind its login, for when provider.plan
+// is unset. Only pro, max and ultra are returned: Team and Enterprise do not say whether the
+// seat is Premium, so they stay unset and the startup notice still asks.
+func DetectPlan(ctx context.Context, p *config.ProviderConfig) (string, error) {
+	configured := ""
+	if p != nil && p.PathToClaudeCodeExecutable != nil {
+		configured = *p.PathToClaudeCodeExecutable
+	}
+	exe, err := ccproto.ResolveExecutable(configured)
+	if err != nil {
+		return "", err
+	}
+	sub, err := ccproto.SubscriptionType(ctx, exe)
+	switch sub {
+	case "pro", "max", "ultra":
+		return sub, err
+	}
+	return "", err
+}
+
+// SetFastMode turns Claude Code's fast mode on or off from the next turn on and updates
+// host's footer; each turn spawns a fresh Claude Code, so a live query keeps the mode it
+// started with.
+func (b *Bridge) SetFastMode(host Host, on bool) {
+	b.fastMode.Store(on)
+	b.showStatus(host)
+}
+
+// FastMode reports whether the next turn asks Claude Code for fast mode.
+func (b *Bridge) FastMode() bool { return b.fastMode.Load() }
+
+// applyFastMode opts settings into fast mode. Claude Code under the SDK keeps fast mode off
+// (sdk_opt_in_required) unless --settings carries fastMode; a model without fast mode ignores it.
+func (b *Bridge) applyFastMode(settings map[string]any) {
+	if b.fastMode.Load() {
+		settings["fastMode"] = true
+	}
 }
 
 // reasoningToEffort maps pi reasoning levels to Claude Code effort levels.

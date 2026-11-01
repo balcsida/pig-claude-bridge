@@ -347,6 +347,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	settings := config.ClaudeCodeSettings(providerSettings)
 	settings["claudeMdExcludes"] = claudeMdExcludes
 	settings["includeGitInstructions"] = false
+	b.applyFastMode(settings)
 	debugFile, onStderr := b.cliDebugOptions("provider")
 	opts := ccproto.Options{
 		Executable: exe, Cwd: cwd, Effort: effort, Resume: syncResult.SessionID,

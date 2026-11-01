@@ -121,6 +121,7 @@ func (b *Bridge) hostSessionID(host Host, event string) string {
 // session is a fresh conversation.
 func (b *Bridge) OnSessionStart(host Host, reason string) {
 	defer b.recoverHandler("session_start")
+	b.showStatus(host)
 	b.rememberSessionCwd(b.hostSessionID(host, "session_start"), host.Cwd())
 	switch reason {
 	case "new", "resume", "fork":
