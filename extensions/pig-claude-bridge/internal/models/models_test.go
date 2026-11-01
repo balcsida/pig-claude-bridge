@@ -301,6 +301,8 @@ func TestApplyLongContext(t *testing.T) {
 		check("pro", pro, 200000, 200000)
 		check("max", maxPlan, 1000000, 200000)
 		check("ultra", LongContextSettings{Plan: "ultra"}, 1000000, 200000)
+		check("team", LongContextSettings{Plan: "team"}, 1000000, 200000)
+		check("enterprise", LongContextSettings{Plan: "enterprise"}, 1000000, 200000)
 		check("extra", extra, 1000000, 1000000)
 
 		// The source table used for id resolution is not mutated.

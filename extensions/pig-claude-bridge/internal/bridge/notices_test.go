@@ -135,8 +135,8 @@ func TestReportLeaks(t *testing.T) {
 	})
 }
 
-func TestDetectPlanKeepsOnlyPlansThatSayWhetherOpusGets1M(t *testing.T) {
-	for sub, want := range map[string]string{"pro": "pro", "max": "max", "ultra": "ultra", "team": "", "enterprise": "", "": ""} {
+func TestDetectPlanKeepsOnlyPlansTheLongContextRulesKnow(t *testing.T) {
+	for sub, want := range map[string]string{"pro": "pro", "max": "max", "ultra": "ultra", "team": "team", "enterprise": "enterprise", "free": "", "": ""} {
 		exe := filepath.Join(t.TempDir(), "claude")
 		script := fmt.Sprintf("#!/bin/sh\necho '{\"subscriptionType\":%q}'\n", sub)
 		if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {

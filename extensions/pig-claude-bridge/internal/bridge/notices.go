@@ -105,8 +105,7 @@ func LongContextSettings(p *config.ProviderConfig) models.LongContextSettings {
 }
 
 // DetectPlan asks Claude Code for the subscription behind its login, for when provider.plan
-// is unset. Only pro, max and ultra are returned: Team and Enterprise do not say whether the
-// seat is Premium, so they stay unset and the startup notice still asks.
+// is unset. A subscription the 1M rules don't know is not returned, so the notice still asks.
 func DetectPlan(ctx context.Context, p *config.ProviderConfig) (string, error) {
 	configured := ""
 	if p != nil && p.PathToClaudeCodeExecutable != nil {
@@ -118,7 +117,7 @@ func DetectPlan(ctx context.Context, p *config.ProviderConfig) (string, error) {
 	}
 	sub, err := ccproto.SubscriptionType(ctx, exe)
 	switch sub {
-	case "pro", "max", "ultra":
+	case "pro", "max", "ultra", "team", "enterprise":
 		return sub, err
 	}
 	return "", err

@@ -32,15 +32,15 @@ Behind the scenes, PiG's tools are bridged to Claude Code but everything works l
 
 The model list is a static table generated from the Anthropic catalog of `@earendil-works/pi-ai` 1.2.0 (`scripts/dev/gen-catalog.mjs`) and registered when the extension loads; it does not follow later catalog updates. Dated snapshot ids are not shown. See [docs/compatibility.md](docs/compatibility.md) (D5).
 
-**1M context:** Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5.5/5 get 1M context. Opus 4.6 gets 1M only on a Max plan or with Extra Usage, and Sonnet 4.6 only with Extra Usage: the extension detects a Max plan by itself (see `provider.plan` in [Configuration](#configuration)); set `provider.longContextExtraUsage` for Extra Usage.
+**1M context:** Fable 5/5.1, Opus 5.5/5/4.8/4.7, and Sonnet 5.5/5 get 1M context. Opus 4.6 gets 1M on Max, Ultra, Team (Standard and Premium seats) and Enterprise plans or with Extra Usage, and Sonnet 4.6 only with Extra Usage ([Claude Code docs](https://code.claude.com/docs/en/model-config#extended-context)): the extension detects the plan by itself (see `provider.plan` in [Configuration](#configuration)); set `provider.longContextExtraUsage` for Extra Usage.
 
-**Fast mode:** `/claude-fast` turns Claude Code's fast mode on or off for the rest of the session (`/claude-fast on`, `/claude-fast off`, or no argument to toggle); set `provider.fastMode` to `true` to start every session with it on. It takes effect from the next turn, on models that have fast mode (Opus 5.5, for example); other models ignore it. While it is on, the footer shows `fast` (see [Footer status](#footer-status)).
+**Fast mode:** `/claude-fast` turns Claude Code's fast mode on or off for the rest of the session (`/claude-fast on`, `/claude-fast off`, or no argument to toggle); set `provider.fastMode` to `true` to start every session with it on. It takes effect from the next turn, on models that have fast mode (Opus 5.5, for example); other models ignore it. On subscription plans fast mode is billed to usage credits, not to the plan's limits, and on Team and Enterprise an Owner has to enable it for the organization first ([Claude Code docs](https://code.claude.com/docs/en/fast-mode)). While it is on, the footer shows `fast` (see [Footer status](#footer-status)).
 
 ### Footer status
 
 The bridge keeps one entry in PiG's footer status bar, for example `Claude Max · fast · 5h 6% ↻3h · 7d 76% ↻8h · Fable 99% ↻8h`:
 
-- the plan (`Pro`, `Max`, `Ultra`, ...), when `provider.plan` is set or the plan was detected; nothing when it is unknown.
+- the plan (`Pro`, `Max`, `Ultra`, `Team`, `Enterprise`), when `provider.plan` is set or the plan was detected; nothing when it is unknown.
 - `fast` while fast mode is on; nothing when it is off.
 - the plan's usage limits, once Claude Code reports them (see [Plan usage for footers and quota extensions](#plan-usage-for-footers-and-quota-extensions)).
 
@@ -88,7 +88,7 @@ The extension asks PiG for both directories; nothing is hard-coded. A missing or
 - `appendSkills`: forward PiG's skills block into the system prompt (default `true`)
 
 `provider`:
-- `plan`: `"pro"`, `"max"` or `"ultra"`. `"max"` and `"ultra"` enable Opus 4.6 with 1M context. Unset, the extension asks `claude auth status --json` once at load and uses a Pro, Max or Ultra subscription it reports; otherwise it falls back to `"pro"`. Team and Enterprise don't say whether the seat is Premium, so set `"max"` yourself on Team Premium/Enterprise.
+- `plan`: `"pro"`, `"max"`, `"ultra"`, `"team"` or `"enterprise"`. Every plan except `"pro"` enables Opus 4.6 with 1M context. Unset, the extension asks `claude auth status --json` once at load and uses the subscription it reports; when that fails (no `claude` on `PATH`, not logged in, or an API key login) it falls back to `"pro"`.
 - `fastMode` (default `false`): start every session with Claude Code's fast mode on. `/claude-fast` changes it for the current session.
 - `longContextExtraUsage`: set to `true` to enable 1M context models even if they cost money through Extra Usage on your plan. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro.
 - `forceTwoHundredK`: array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if the catalog declares a model at 1M but Claude Code won't serve it on your plan.

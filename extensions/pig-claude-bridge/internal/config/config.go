@@ -43,8 +43,8 @@ type ProviderConfig struct {
 	StrictMcpConfig            *bool   `json:"strictMcpConfig,omitempty"`
 	AutoMemoryEnabled          *bool   `json:"autoMemoryEnabled,omitempty"`
 	PathToClaudeCodeExecutable *string `json:"pathToClaudeCodeExecutable,omitempty"`
-	// Plan is the subscription tier ("pro" | "max" | "ultra"). "max" and "ultra" enable Opus 4.6
-	// at 1M context. Unset, the extension asks `claude auth status` at load.
+	// Plan is the subscription tier ("pro" | "max" | "ultra" | "team" | "enterprise"). Every plan
+	// but "pro" enables Opus 4.6 at 1M context. Unset, the extension asks `claude auth status` at load.
 	Plan *string `json:"plan,omitempty"`
 	// FastMode starts every session with Claude Code's fast mode on; /claude-fast toggles it.
 	FastMode *bool `json:"fastMode,omitempty"`

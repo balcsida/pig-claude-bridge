@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- feat(provider): when `provider.plan` is unset, the plan is detected from `claude auth status --json` at load, so a Max (or Ultra) subscription gets Opus 4.6 at 1M without configuration and the startup notice no longer asks.
+- feat(provider): when `provider.plan` is unset, the plan is detected from `claude auth status --json` at load, so a Max, Ultra, Team or Enterprise subscription gets Opus 4.6 at 1M without configuration and the startup notice no longer asks.
+- fix(models): Opus 4.6 at 1M is enabled on the `team` and `enterprise` plans (Standard and Premium seats alike), as Claude Code's docs say it is included there.
 - feat(provider): `/claude-fast [on|off]` toggles Claude Code's fast mode for the session, and `provider.fastMode` turns it on by default; the bridge passes `fastMode: true` in Claude Code's `--settings`, which an SDK session needs (`sdk_opt_in_required` otherwise).
 - feat(bridge): the footer status shows the plan from session start and `fast` while fast mode is on, ahead of the usage limits (`Claude Max · fast · 5h 6% ↻3h · 7d 76% ↻8h`).
 
