@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- ci: the release workflow no longer passes an `NPM_TOKEN` secret to `npm publish`. The package publishes through npm trusted publishing (OIDC); the secret was never set, so the variable came through empty.
+
 ## 0.5.0 - 2026-11-09
 
 Catches up with pi-claude-bridge 0.11.0 (acbe45b). Every behaviour listed here is the TypeScript's unless marked port-only; docs/compatibility.md lists what is deliberately different.
