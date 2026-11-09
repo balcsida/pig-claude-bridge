@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-09
+
 - build: the PiG Go SDK pin moves from v0.5.3 to v0.7.0 (PiG 0.7.0); no API the bridge uses changed. Verified against Claude Code 2.1.319 (`ccproto.MinVersion` stays 2.1.310).
 - feat(ccproto): Claude Code runs with feature-flag evaluation off (`CLAUDE_CODE_DISABLE_FEATURE_FLAGS=1`): every GrowthBook flag and experiment (`tengu_*`) takes its built-in default and the assignments cached in `~/.claude.json` are not read. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, which the bridge already set, implies this in 2.1.319; the explicit variable pins it, and `TestDisableFeatureFlagsTurnsFlagEvaluationOff` fails if a Claude Code release stops honouring it. Server-side changes to a model are outside the client's reach.
 - fix(ccproto): ported from pi-claude-bridge 0.11.0: Claude Code's "The user hasn't heard from you in a while" reminder is off (`CLAUDE_CODE_SILENT_TURN_REMINDER=0`), MCP tool descriptions are cut at 16384 chars instead of 4096 (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`), and a resumed session that ends at a tool result no longer gets a "Continue from where you left off." message ahead of PiG's prompt (`CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1`, pi-claude-bridge #145).
