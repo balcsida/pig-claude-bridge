@@ -52,12 +52,9 @@ The plan shows from session start, fast mode as soon as `/claude-fast` changes i
 
 ## Configuration
 
-Config file `claude-bridge.json`, in two places (the project file is merged over the global one, key by key):
+Config file `claude-bridge.json` in PiG's agent directory, `~/.pig/agent` by default (`$PIG_HOME/agent`, or `PIG_CODING_AGENT_DIR`). With `PIG_USE_PI_DIRS=1` PiG shares Pi's tree and this is `~/.pi/agent` (or `PI_CODING_AGENT_DIR`). There is no project config (pi-claude-bridge #198): a cloned repo could otherwise point the bridge at its own Claude Code executable or turn on metered billing. For the same reason Claude Code loads only `~/.claude/settings.json` on the provider path, never a repo's `.claude/settings.json` or `settings.local.json`.
 
-- global: PiG's agent directory, `~/.pig/agent` by default (`$PIG_HOME/agent`, or `PIG_CODING_AGENT_DIR`). With `PIG_USE_PI_DIRS=1` PiG shares Pi's tree and this is `~/.pi/agent` (or `PI_CODING_AGENT_DIR`).
-- project: `<project>/.pig/claude-bridge.json`; under `PIG_USE_PI_DIRS=1`, `<project>/.pi/claude-bridge.json`.
-
-The extension asks PiG for both directories; nothing is hard-coded. A missing or unparseable file counts as empty; with `CLAUDE_BRIDGE_DEBUG` set, a parse failure is written to the debug log. A key with a value of the wrong type is ignored, except `askClaude.allowFullMode` and `askClaude.defaultMode`, which fail closed (full mode denied, mode `none`).
+The extension asks PiG for the directory; nothing is hard-coded. A missing or unparseable file counts as empty; with `CLAUDE_BRIDGE_DEBUG` set, a parse failure is written to the debug log. A key with a value of the wrong type is ignored, except `askClaude.allowFullMode` and `askClaude.defaultMode`, which fail closed (full mode denied, mode `none`).
 
 ```json
 {
@@ -184,9 +181,9 @@ Claude Code sends a `rate_limit_event` when a usage window changes. The TypeScri
 
 ## Known issues
 
-**A session rebuild re-sends the whole conversation.** The bridge rewrites Claude Code's session from PiG's history whenever the two diverge (after an abort, `/compact`, tree navigation, an API error, or on returning to a session), and the next request usually misses the prompt cache for everything past the system prompt. Abort-heavy sessions cost noticeably more.
+**Session sync.** The bridge compares PiG's history with what Claude Code's session file covers, message by message. An unchanged history resumes the session; a rewind, edit, abort, failed turn or restart forks or trims it at the last point both agree and imports only what follows; a full import happens only when the model, the system prompt or the working directory changed. The pointer from a PiG session to its Claude Code session lives under `<agent dir>/claude-bridge/sessions/` (user-only files), so a restart or `/reload` forks the earlier session instead of re-sending the conversation, and a `/fork` or clone continues from its parent's. Each import or trim still costs that turn a prompt-cache miss for what it rewrote.
 
-**Files Claude Code edits are not carried across a rebuild.** The edit itself survives in the history as a tool call and result; what is lost is the post-edit file snapshot. `@file` expansions *are* carried.
+**Files Claude Code edits are not carried across an import.** The edit itself survives in the history as a tool call and result; what is lost is the post-edit file snapshot. `@file` expansions and tool results Claude Code saved to a file *are* carried.
 
 **System prompt changes mid-session may not reach the model.** Project context (AGENTS.md/CLAUDE.md), skills, and extension-written instructions are captured on the first request and reused on resume. This keeps the cached prefix stable, but later changes may not take effect until a rebuild or compaction. Start a new session if updated instructions must take effect immediately.
 
