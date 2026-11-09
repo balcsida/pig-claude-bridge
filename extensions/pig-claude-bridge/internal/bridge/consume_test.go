@@ -771,6 +771,36 @@ func parkedQuery(t *testing.T, b *Bridge, toolCallID, piSessionID string) *parke
 	return p
 }
 
+// pi-claude-bridge #111: tool-call ids repeat across sessions whenever one copies
+// another's history, so a result routes only to its own session's parked query.
+func TestToolResultsRouteOnlyWithinTheirPiSession(t *testing.T) {
+	b, _, _ := newTestBridge(t, false)
+	p := parkedQuery(t, b, "call_1", "pi-parent")
+	results := []convert.McpResult{mcpResult("call_1", "file contents", false)}
+	if b.contextForToolResults(results, "pi-parent") != p.q {
+		t.Fatal("the owning session's result routes to its parked query")
+	}
+	if b.contextForToolResults(results, "pi-worker") != nil {
+		t.Fatal("another session's copy of the result must not enter this session's query")
+	}
+}
+
+// Provider env from pi (a credential's env or the caller's) reaches the child, except
+// the variables the bridge reads Claude Code's session files through.
+func TestProviderEnv(t *testing.T) {
+	env, err := providerEnv(map[string]any{"env": map[string]any{"ANTHROPIC_BASE_URL": "", "HTTPS_PROXY": "http://p"}})
+	if err != nil || !reflect.DeepEqual(env, []string{"ANTHROPIC_BASE_URL=", "HTTPS_PROXY=http://p"}) {
+		t.Fatalf("env = %q, %v", env, err)
+	}
+	if env, err := providerEnv(map[string]any{}); err != nil || env != nil {
+		t.Fatalf("no env: %q, %v", env, err)
+	}
+	_, err = providerEnv(map[string]any{"env": map[string]any{"claude_config_dir": "/elsewhere", "HOME": "/h"}})
+	if err == nil || !strings.Contains(err.Error(), "can't set HOME, claude_config_dir") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestDiscardRewrittenQuery(t *testing.T) {
 	toolResults := []convert.McpResult{mcpResult("call_1", "file contents", false)}
 	const discardReason = "Context was compacted; this query was discarded."
@@ -778,11 +808,11 @@ func TestDiscardRewrittenQuery(t *testing.T) {
 	t.Run("stops the parked query being a routing target for the turn's result", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		p := parkedQuery(t, b, "call_1", "pi-parent")
-		if b.contextForToolResults(toolResults) != p.q {
+		if b.contextForToolResults(toolResults, "pi-parent") != p.q {
 			t.Fatal("precondition: the result routes to the parked query")
 		}
 		b.discardRewrittenQuery(p.q, discardReason)
-		if b.contextForToolResults(toolResults) != nil {
+		if b.contextForToolResults(toolResults, "pi-parent") != nil {
 			t.Fatal("a result routed here would answer over the conversation pi just discarded")
 		}
 		b.mu.Lock()

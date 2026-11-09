@@ -41,7 +41,9 @@ type RateLimitInfo struct {
 	OverageResetsAt    *float64
 	Utilization        *float64
 	SurpassedThreshold *float64
-	UnifiedWindows     map[string]*UsageWindow
+	// IsUsingOverage: the plan limit is hit but Extra Usage is serving (and billing) requests.
+	IsUsingOverage bool
+	UnifiedWindows map[string]*UsageWindow
 }
 
 // formatHeaderNumber renders a number as JavaScript's String(n) does for the
@@ -180,7 +182,16 @@ func (b *Bridge) handleRateLimitEvent(host Host, q *QueryContext, info RateLimit
 		if kind == "" {
 			kind = "unknown"
 		}
-		notice = fmt.Sprintf("Claude subscription rate limit reached (%s) — resets at %s", kind, resetsAt)
+		if info.IsUsingOverage {
+			// The plan limit is hit but Extra Usage is serving (and billing) requests.
+			until := ""
+			if resetsAt != "unknown" {
+				until = " until " + resetsAt
+			}
+			notice = fmt.Sprintf("Claude subscription rate limit reached (%s) — requests are now billed to Extra Usage%s", kind, until)
+		} else {
+			notice = fmt.Sprintf("Claude subscription rate limit reached (%s) — resets at %s", kind, resetsAt)
+		}
 	case "allowed":
 		// Back under the threshold (window reset): re-arm the warning dedupe.
 		q.lastRateLimitWarnStep, q.lastRateLimitWarnThreshold = nil, nil

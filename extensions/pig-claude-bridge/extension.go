@@ -129,8 +129,7 @@ func Extension() *sdk.Extension {
 	// unread and the logs beside the cwd, and the extension still loads.
 	agentDir, _ := sdk.AgentDir()
 	configDirName, _ := sdk.ConfigDirName()
-	cwd, _ := os.Getwd()
-	cfg := config.Load(agentDir, cwd, configDirName)
+	cfg := config.Load(agentDir)
 	// Detected before the provider registers, since the plan decides which models get 1M.
 	// Skipped outside a host, so validate-only installs and tests never spawn claude.
 	if agentDir != "" && cfg.Provider.Plan == nil {
@@ -218,6 +217,19 @@ func Extension() *sdk.Extension {
 	forward("session_compact_failed", func(h bridge.Host, _ map[string]any) { b.OnSessionCompactFailed(h) })
 	forward("session_tree", func(h bridge.Host, _ map[string]any) { b.OnSessionTree(h) })
 	forward("session_shutdown", func(h bridge.Host, _ map[string]any) { b.OnSessionShutdown(h) })
+	// Claude Code models expect bash to time out (CC's default is 120s); PiG's bash has none.
+	// Set on the execution copy PiG hands tool_call handlers, not in the stored call, so PiG's
+	// history keeps the arguments CC sent and a rebuild matches CC's records (pi-claude-bridge
+	// #203). A `background: true` call (added by an extension) doesn't block the turn, so it
+	// gets no default.
+	ext.OnEvent("tool_call", func(ctx sdk.Context, data map[string]any) (any, error) {
+		defer func() { _ = recover() }()
+		input, _ := data["input"].(map[string]any)
+		if sdk.IsToolCallEventType("bash", data) && input != nil && input["timeout"] == nil && input["background"] != true && ctx.ModelProvider() == "claude-bridge" {
+			input["timeout"] = 120
+		}
+		return nil, nil
+	})
 	return ext
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -368,7 +369,7 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 	summarized := "summarized"
 	want := ccproto.Options{
 		Executable: h.exe, Cwd: cwd, Effort: "high", Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions",
-		IncludePartialMessages: true,
+		IncludePartialMessages: true, SettingSourcesSet: true, SettingSources: []string{"user"},
 		Settings: map[string]any{
 			"autoMemoryEnabled": false, "includeGitInstructions": false, "outputStyle": "default",
 			"claudeMdExcludes": []string{"**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"},
@@ -408,6 +409,8 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 		t.Fatal("no provider entry in the snapshot")
 	}
 	argv := ccproto.BuildArgs(got)
+	// settingSources:["user"] postdates the snapshot (pi-claude-bridge #198); the want above pins it.
+	argv = slices.DeleteFunc(argv, func(a string) bool { return a == "--setting-sources=user" })
 	if len(argv) != len(snap.Argv) {
 		t.Fatalf("argv\n got  %q\n want %q", argv, snap.Argv)
 	}

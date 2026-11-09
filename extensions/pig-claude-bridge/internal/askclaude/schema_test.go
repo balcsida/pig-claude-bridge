@@ -181,7 +181,7 @@ func TestMistypedConfiguredDefaultModeResolvesToNone(t *testing.T) {
 	if err := os.WriteFile(config.GlobalConfigPath(agentDir), []byte(`{"askClaude":{"enabled":true,"defaultMode":5}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Load(agentDir, t.TempDir(), ".pi")
+	cfg := config.Load(agentDir)
 	mode, err := ResolveMode(Unset, ResolveDefaults(cfg.AskClaude))
 	if err != nil || mode != ModeNone {
 		t.Fatalf("mode = %q, %v", mode, err)

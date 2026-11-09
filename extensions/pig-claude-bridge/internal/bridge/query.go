@@ -92,6 +92,9 @@ type QueryContext struct {
 	turnStreamOpen      bool
 	// turnStreamBlockStart is len(turnBlocks) at message_start.
 	turnStreamBlockStart int
+	// turnFallbackMessageID is the API message id of the non-streaming fallback being
+	// delivered from `assistant` messages, one block per message, all under this id.
+	turnFallbackMessageID string
 }
 
 func newQueryContext() *QueryContext {
@@ -138,6 +141,7 @@ func (c *QueryContext) resetTurnState(model map[string]any) {
 	c.turnStreamMessageID = ""
 	c.turnStreamOpen = false
 	c.turnStreamBlockStart = 0
+	c.turnFallbackMessageID = ""
 }
 
 // newAssistantOutput is an assistant message for model with zeroed usage (index.ts

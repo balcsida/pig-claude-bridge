@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os/exec"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 
@@ -122,7 +123,7 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 	if len(b.liveContexts()) > 0 {
 		allResults, _ = convert.ExtractAllToolResults(messages)
 		if len(allResults) > 0 {
-			resultCtx = b.contextForToolResults(allResults)
+			resultCtx = b.contextForToolResults(allResults, piSessionID)
 		}
 	}
 
@@ -256,6 +257,10 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		}
 		return errorStream(model, err.Error())
 	}
+	env, err := providerEnv(options)
+	if err != nil {
+		return errorStream(model, err.Error())
+	}
 
 	cwd := b.sessionCwdFor(piSessionID)
 	// cliModel is the id sent to Claude Code (may carry [1m]); model["id"] is the pi-registered id.
@@ -352,9 +357,14 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	b.applyFastMode(settings)
 	debugFile, onStderr := b.cliDebugOptions("provider")
 	opts := ccproto.Options{
-		Executable: exe, Cwd: cwd, Effort: effort, Resume: syncResult.SessionID,
+		Executable: exe, Cwd: cwd, Env: env, Effort: effort, Resume: syncResult.SessionID,
 		ThinkingDisabled: thinkingDisabledForReasoning(model, options["reasoning"]),
-		Tools:            []string{}, ToolsSet: true, PermissionMode: "bypassPermissions", IncludePartialMessages: true,
+		// User settings only (pi-claude-bridge #198): a repo's .claude/settings.json and
+		// settings.local.json can carry hooks, apiKeyHelper, env and plugins, and Claude Code
+		// trusts the workspace when it isn't interactive, so they would run with no prompt.
+		// ~/.claude/settings.json still loads: Bedrock/Vertex users keep env and apiKeyHelper there.
+		SettingSourcesSet: true, SettingSources: []string{"user"},
+		Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions", IncludePartialMessages: true,
 		Settings: settings, DebugFile: debugFile, AppendSystemPrompt: systemPromptAppend, ExtraArgs: extraArgs,
 	}
 	handlers := ccproto.Handlers{OnStderr: onStderr}
@@ -437,6 +447,30 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		b.runConsume(queryCtx, host, q, client, complete)
 	}()
 	return stream
+}
+
+// sessionStorageVars are read by the bridge through PiG's own values to find Claude
+// Code's session files; a child pointed elsewhere would resume a session the bridge never wrote.
+var sessionStorageVars = []string{"CLAUDE_CONFIG_DIR", "HOME", "USERPROFILE"}
+
+// providerEnv is pi's per-request provider env (a stored credential's `env`, or the
+// caller's), as NAME=value entries for ccproto.Options.Env; an empty value unsets.
+func providerEnv(options map[string]any) ([]string, error) {
+	raw := obj(options["env"])
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var storage, env []string
+	for _, name := range sortedKeys(raw) {
+		if slices.Contains(sessionStorageVars, strings.ToUpper(name)) {
+			storage = append(storage, name)
+		}
+		env = append(env, name+"="+str(raw[name]))
+	}
+	if len(storage) > 0 {
+		return nil, fmt.Errorf("claude-bridge: provider env can't set %s; the bridge reads Claude Code's session files through PiG's own values", strings.Join(storage, ", "))
+	}
+	return env, nil
 }
 
 func orDefault(effort string) string {

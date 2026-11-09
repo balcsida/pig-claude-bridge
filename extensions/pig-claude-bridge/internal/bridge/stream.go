@@ -473,19 +473,25 @@ func (b *Bridge) processAssistantMessage(q *QueryContext, frame map[string]any) 
 		}
 		return
 	}
-	if q.turnSawStreamEvent {
+	id := str(msg["id"])
+	if q.turnSawStreamEvent && (id == "" || id != q.turnFallbackMessageID) {
 		// Same id was already delivered; a new id is CC's non-streaming fallback.
 		// Deliberately delivered even if the stream stopped, at the risk of
 		// duplication if CC renumbers it.
-		id := str(msg["id"])
 		if id == "" || q.turnStreamMessageID == "" || id == q.turnStreamMessageID {
 			return
 		}
 		if q.turnStreamOpen {
 			b.dropAbandonedStreamBlocksLocked(q, "non-streaming fallback "+id)
 		}
+		q.turnFallbackMessageID = id
 	}
-	q.turnToolCallIDs = []string{}
+	// Later blocks of the same id continue the message rather than starting it over
+	// (the SDK hands a fallback over one block per message).
+	if id != q.turnStreamMessageID {
+		q.turnStreamMessageID = id
+		q.turnToolCallIDs = []string{}
+	}
 	types := make([]string, 0, len(content))
 	for _, raw := range content {
 		types = append(types, str(obj(raw)["type"]))

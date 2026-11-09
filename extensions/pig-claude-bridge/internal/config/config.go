@@ -60,10 +60,6 @@ func GlobalConfigPath(agentDir string) string {
 	return filepath.Join(agentDir, "claude-bridge.json")
 }
 
-func ProjectConfigPath(cwd, configDirName string) string {
-	return filepath.Join(cwd, configDirName, "claude-bridge.json")
-}
-
 // ClaudeCodeSettings returns the settings object handed to Claude Code; auto-memory is off unless set.
 func ClaudeCodeSettings(p *ProviderConfig) map[string]any {
 	enabled := false
@@ -73,19 +69,19 @@ func ClaudeCodeSettings(p *ProviderConfig) map[string]any {
 	return map[string]any{"autoMemoryEnabled": enabled}
 }
 
-// Load merges the project file over the global file per key; a key the project file
-// does not set keeps the global value. Unreadable or unparseable files count as empty
-// and are listed in Problems.
-func Load(agentDir, cwd, configDirName string) Config {
+// Load reads the global file. There is no project config (pi-claude-bridge #198): a
+// cloned repo could otherwise point the bridge at its own Claude Code executable or
+// turn on metered billing. An unreadable or unparseable file counts as empty and is
+// listed in Problems.
+func Load(agentDir string) Config {
 	cfg := Config{}
-	for _, path := range []string{GlobalConfigPath(agentDir), ProjectConfigPath(cwd, configDirName)} {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			err = decodeValidKeys(data, &cfg)
-		}
-		if err != nil && !os.IsNotExist(err) {
-			cfg.Problems = append(cfg.Problems, fmt.Sprintf("claude-bridge: failed to parse %s: %v", path, err))
-		}
+	path := GlobalConfigPath(agentDir)
+	data, err := os.ReadFile(path)
+	if err == nil {
+		err = decodeValidKeys(data, &cfg)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		cfg.Problems = append(cfg.Problems, fmt.Sprintf("claude-bridge: failed to parse %s: %v", path, err))
 	}
 	if cfg.AskClaude == nil {
 		cfg.AskClaude = &AskClaudeConfig{}

@@ -67,13 +67,18 @@ func (b *Bridge) unregisterContext(q *QueryContext) {
 	delete(b.contexts, q)
 }
 
-// contextForToolResults finds the live query a turn's results belong to, by the
-// tool call ids it parked, queued or emitted. nil when none matches.
-func (b *Bridge) contextForToolResults(results []convert.McpResult) *QueryContext {
+// contextForToolResults finds the parked query of this pi session that a turn's
+// results answer, by the tool call ids it parked, queued or emitted. nil when none
+// matches. Tool-call ids repeat across sessions whenever one copies another's
+// history (a fork, a worker seeded from its host), so an id alone could deliver one
+// session's turn into another's Claude Code query (pi-claude-bridge #111).
+func (b *Bridge) contextForToolResults(results []convert.McpResult, piSessionID string) *QueryContext {
 	b.mu.Lock()
 	live := make([]*QueryContext, 0, len(b.contexts))
 	for c := range b.contexts {
-		live = append(live, c)
+		if c.piSessionID == piSessionID {
+			live = append(live, c)
+		}
 	}
 	b.mu.Unlock()
 	for _, r := range results {
@@ -195,6 +200,7 @@ func parseRateLimitInfo(m map[string]any) RateLimitInfo {
 		OverageStatus: str(m["overageStatus"]), OverageResetsAt: num(m["overageResetsAt"]),
 		Utilization: num(m["utilization"]), SurpassedThreshold: num(m["surpassedThreshold"]),
 	}
+	info.IsUsingOverage, _ = m["isUsingOverage"].(bool)
 	if windows := obj(m["unifiedWindows"]); windows != nil {
 		info.UnifiedWindows = map[string]*UsageWindow{}
 		for name, raw := range windows {
