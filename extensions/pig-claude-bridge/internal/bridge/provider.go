@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,7 +35,7 @@ const (
 		"ending with the tool result you were waiting for. Continue the task from there.]"
 	continueAfterResumePrompt = "[Your session was interrupted and resumed. What precedes this ends with the tool result " +
 		"you were waiting for. Continue the task from there.]"
-	discardedQueryReason = "Context was compacted; this query was discarded."
+	discardedQueryReason = "Context changed; this query was discarded."
 )
 
 // errorStream is a stream that fails its turn with message. The provider contract
@@ -90,11 +92,20 @@ func (b *Bridge) askClaudeToolName() string {
 	return "AskClaude"
 }
 
+// nonSystem is the conversation without pi's system messages.
+func nonSystem(messages []map[string]any) []map[string]any {
+	all := make([]any, len(messages))
+	for i, m := range messages {
+		all[i] = m
+	}
+	return convert.NonSystemMessages(all)
+}
+
 func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, options map[string]any) *sdk.ModelEventStream {
 	b.showStartupNoticeOnce(host)
 	// PiG hands providers a transcript (prompt and tools folded into system
-	// messages): fold it back out to the prompt and tools fields every cursor write,
-	// sync and prompt-capture lookup below assumes.
+	// messages): fold it back out to the prompt and tools fields every sync and
+	// prompt-capture lookup below assumes.
 	piContext = convert.ToBridgeContext(piContext)
 	messages := messagesOf(piContext)
 
@@ -131,13 +142,36 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 	// query answers about a conversation that no longer exists. Discard it and let
 	// this tool result carry the turn into a fresh query over the rewritten history.
 	// The staleness mark is per pi session: a subagent's compaction must not discard
-	// the parent's parked query, and vice versa.
-	rewrittenUnderQuery := resultCtx != nil && b.contextStale(resultCtx)
-	if rewrittenUnderQuery {
-		b.discardRewrittenQuery(resultCtx, discardedQueryReason)
-		resultCtx = nil
-		// Recomputed, not cleared: a reentrant subagent may still hold a query of its own.
-		activeQuery = b.hasActiveQuery()
+	// the parent's parked query, and vice versa. Extensions can also edit the selected
+	// history without a rewrite event; compare the live prefix before feeding this
+	// query a result.
+	rewrittenUnderQuery := false
+	if resultCtx != nil {
+		stale := b.contextStale(resultCtx)
+		var div Divergence
+		if !stale {
+			var err error
+			if div, err = resultCtx.recording.Divergence(nonSystem(messages)); err != nil {
+				// A history that can't be checked can't continue the query either.
+				b.discardRewrittenQuery(resultCtx, discardedQueryReason)
+				return errorStream(model, err.Error())
+			}
+		}
+		if stale || div.Diverged || div.Duplicate {
+			reason := "rewrite-event"
+			switch {
+			case div.Duplicate:
+				reason = "history-diverged at a duplicate record"
+			case div.Diverged:
+				reason = fmt.Sprintf("history-diverged at message %d", div.Index)
+			}
+			b.debugf("provider: discarding parked query: %s", reason)
+			b.discardRewrittenQuery(resultCtx, discardedQueryReason)
+			resultCtx = nil
+			rewrittenUnderQuery = true
+			// Recomputed, not cleared: a reentrant subagent may still hold a query of its own.
+			activeQuery = b.hasActiveQuery()
+		}
 	}
 	if activeQuery && lastMsgRole == "user" && len(allResults) == 0 {
 		b.debugf("provider: active query user-only call treated as reentrant fresh query, ctx.msgs=%d", len(messages))
@@ -175,14 +209,8 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 		go func() {
 			defer b.queries.Done()
 			defer b.recoverHandler("deliverToolResults")
-			b.deliverToolResults(context.WithoutCancel(ctx), host, resultCtx, allResults, steer, len(messages))
+			b.deliverToolResults(context.WithoutCancel(ctx), host, resultCtx, allResults, steer, nonSystem(messages))
 		}()
-		// The shared cursor tracks the top-level conversation: a reentrant subagent
-		// delivering its own results must not drag it back to that subagent's count.
-		b.setCursor(resultCtx.piSessionID, len(messages))
-		resultCtx.mu.Lock()
-		resultCtx.latestCursor = max(resultCtx.latestCursor, len(messages))
-		resultCtx.mu.Unlock()
 		return stream
 	}
 
@@ -195,17 +223,22 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 	unparkedToolResult := lastMsgRole == "toolResult" && !rewrittenUnderQuery
 	if unparkedToolResult && ctx.Err() != nil {
 		b.debugf("provider: orphaned tool result after abort, emitting end_turn")
-		// With no query in flight anywhere, the session this result belongs to is the
-		// one whose turn just ended: its cursor advances to count the result.
-		if len(b.liveContexts()) == 0 {
-			b.setCursor(piSessionID, len(messages))
-		}
 		// No query owns this result, so there is no context to reset: a throwaway
 		// supplies the empty message this turn ends with.
 		c := newQueryContext()
 		c.resetTurnState(model)
 		stream.Push(map[string]any{"type": "done", "reason": "stop", "message": c.turnOutput})
 		return stream
+	}
+
+	// A fresh request replaces a parked query of this same pi session. Its
+	// synchronous progress commit happens before sync takes a state identity.
+	if piSessionID != "" {
+		for _, parked := range b.liveContexts() {
+			if parked.piSessionID == piSessionID {
+				b.discardRewrittenQuery(parked, discardedQueryReason)
+			}
+		}
 	}
 
 	return b.freshQuery(ctx, host, stream, model, piContext, messages, options, piSessionID, unparkedToolResult, rewrittenUnderQuery)
@@ -262,22 +295,46 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		return errorStream(model, err.Error())
 	}
 
+	// Readers of a session file wait for the child last writing it to exit, never
+	// just for the end of its frames.
+	if before := b.sessionStateFor(piSessionID); before != nil {
+		if err := b.waitForSessionWriter(ctx, before.CCSessionID); err != nil {
+			return abortedStream(model)
+		}
+	}
+
 	cwd := b.sessionCwdFor(piSessionID)
 	// cliModel is the id sent to Claude Code (may carry [1m]); model["id"] is the pi-registered id.
 	cliModel := models.ClaudeCodeModelID(str(model["id"]), b.longContext)
 	// Read before the sync: with no query parked (an overflow retried after
 	// compaction), the session's mark is the only sign of the rewrite.
 	historyRewritten := rewrittenUnderQuery || b.hasRewriteMark(piSessionID)
-	syncResult, err := b.syncSharedSession(host, piSessionID, messages, customToolNameToSdk, cwd, cliModel)
+	sum := sha256.Sum256([]byte(systemPromptAppend))
+	promptDigest := hex.EncodeToString(sum[:])
+	syncResult, err := b.syncSharedSession(host, piSessionID, messages, customToolNameToSdk, cwd, cliModel, promptDigest)
 	if err != nil {
 		return errorStream(model, err.Error())
 	}
 	// This query starts from the history pi has now: consume this session's armed
 	// rewrite; a sibling session's stays armed for its own queries.
 	b.clearRewriteMark(piSessionID)
+	history := nonSystem(messages)
+	recording, err := NewLiveRecording(&syncResult.Recorded, history)
+	if err != nil {
+		return errorStream(model, err.Error())
+	}
+	// A created session that never launches is deleted again below.
+	cleanupCreated := func() {
+		if syncResult.Created {
+			if err := ccsession.Delete(syncResult.TargetSessionID, cwd, ""); err != nil {
+				b.debugf("provider: could not delete unlaunched session %s: %v", short(syncResult.TargetSessionID), err)
+			}
+		}
+	}
 
 	promptBlocks, err := b.extractUserPromptBlocks(messages)
 	if err != nil {
+		cleanupCreated()
 		return errorStream(model, err.Error())
 	}
 	promptText, _ := extractUserPrompt(messages)
@@ -294,6 +351,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		b.debugf("provider: resuming the turn at a tool result with no parked query, %d msgs", len(messages))
 	}
 	q := newQueryContext()
+	q.recording = recording
 	// Guard: an empty prompt means the last context message isn't a user message.
 	if !hasPrompt() {
 		roles := make([]string, len(messages))
@@ -301,12 +359,8 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 			roles[i] = fmt.Sprintf("[%d]%v", i, m["role"])
 		}
 		var shared any
-		st := b.sessionStateFor(piSessionID)
-		if st == nil {
-			st = b.sessionStateFor("")
-		}
-		if st != nil {
-			shared = map[string]any{"sessionId": short(st.SessionID), "cursor": st.Cursor}
+		if st := b.sessionStateFor(piSessionID); st != nil {
+			shared = map[string]any{"sessionId": short(st.CCSessionID), "recorded": len(st.Digests)}
 		}
 		b.diagDump("empty_prompt", map[string]any{
 			"contextLength": len(messages), "lastMsgRole": lastMsgRole, "isReentrant": b.hasActiveQuery(),
@@ -321,6 +375,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	q.customToolNameToPi = customToolNameToPi
 	mcpServer, err := b.buildMcpServer(mcpTools, q)
 	if err != nil {
+		cleanupCreated()
 		return errorStream(model, err.Error())
 	}
 
@@ -331,6 +386,17 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	if promptBlocks == nil {
 		promptContent = []any{map[string]any{"type": "text", "text": promptText}}
 	}
+	// A durable tool-result continuation has no user slot. Its synthetic instruction
+	// belongs to the following assistant's boundary, not the imported prior result.
+	// Like a steer, the prompt is recorded only on CC's replay acknowledgement or,
+	// when CC never replays it, on the query's first output (tapRecording): a stdin
+	// write does not prove CC persisted its record.
+	promptUUID := newUUID()
+	if err := recording.Users(history, turnStart(history), promptUUID, false, false); err != nil {
+		cleanupCreated()
+		return errorStream(model, err.Error())
+	}
+	q.turnOpener = promptUUID
 
 	providerSettings := b.deps.Config.Provider
 	// --strict-mcp-config makes Claude Code use only the servers passed
@@ -367,6 +433,14 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions", IncludePartialMessages: true,
 		Settings: settings, DebugFile: debugFile, AppendSystemPrompt: systemPromptAppend, ExtraArgs: extraArgs,
 	}
+	if syncResult.ForkAt != "" {
+		opts.ForkSession, opts.ResumeSessionAt = true, syncResult.ForkAt
+	}
+	// --session-id names a fresh launch or a fork's target; a prewritten import resumes
+	// its own id, and CC rejects --session-id beside it.
+	if syncResult.Created && (syncResult.SessionID == "" || syncResult.ForkAt != "") {
+		opts.SessionID = syncResult.TargetSessionID
+	}
 	handlers := ccproto.Handlers{OnStderr: onStderr}
 	if mcpServer != nil {
 		opts.SDKMcpServers = []string{convert.MCPServerName}
@@ -377,8 +451,8 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 			return mcpServer.Handle(ctx, message)
 		}
 	}
-	b.debugf("provider: fresh query model=%s msgs=%d tools=%d resume=%s effort=%s strictMcp=%t prompt=%s",
-		cliModel, len(messages), len(mcpTools), short(syncResult.SessionID), orDefault(effort), strictMcp, truncateRunes(promptText, 60))
+	b.debugf("provider: fresh query model=%s msgs=%d tools=%d resume=%s fork=%s effort=%s strictMcp=%t piSession=%s prompt=%s",
+		cliModel, len(messages), len(mcpTools), orNone(short(syncResult.SessionID)), orNone(short(syncResult.ForkAt)), orDefault(effort), strictMcp, orNone(piSessionID), truncateRunes(promptText, 60))
 
 	// The query outlives this call, so its process runs on its own context; abort cancels it.
 	// Until the stream takes over below, the call's abort reaches the start-up too.
@@ -388,6 +462,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	stopStartupAbort()
 	if err != nil {
 		cancelQuery()
+		cleanupCreated()
 		if ctx.Err() != nil {
 			b.debugf("provider: aborted while Claude Code started: %v", err)
 			return abortedStream(model)
@@ -407,16 +482,70 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	go func() {
 		defer b.queries.Done()
 		defer b.recoverHandler("initial prompt push")
-		if err := promptStream.Push(queryCtx, userMessage(promptContent, "")); err != nil {
+		msg := userMessage(promptContent, "")
+		msg.UUID = promptUUID
+		if err := promptStream.Push(queryCtx, msg); err != nil {
 			b.debugf("provider: initial prompt push rejected: %v", err)
 		}
 	}()
+
+	// Session bookkeeping of this query (index.ts commitRecording/persistRecording).
+	// Every commit ends this query's writing (abort, discard, failure, completion), so
+	// later readers of its file wait for the child to exit. Memory is authoritative at
+	// once; the file is saved after exit, since a replayed uuid can precede its record
+	// on disk and a pointer saved earlier could outlive a crash naming records that
+	// never land.
+	target := syncResult.TargetSessionID
+	exited := client.Done()
+	stopWriting := func() { b.setWriter(target, exited) }
+	var commitMu sync.Mutex
+	expected := syncResult.State
+	var unsaved *SessionState
+	commit := func(dirty bool) {
+		stopWriting()
+		commitMu.Lock()
+		defer commitMu.Unlock()
+		if !dirty && (recording.HasGaps() || (syncResult.Created && !recording.HasProgress())) {
+			// Costs the next turn a prefix write.
+			b.debugf("recording: clean end left messages unrecorded piSession=%s", orNone(piSessionID))
+		}
+		if piSessionID == "" || b.sessionStateFor(piSessionID) != expected || (syncResult.Created && !recording.HasProgress()) {
+			return
+		}
+		state := &SessionState{CCSessionID: target, Cwd: cwd, Model: cliModel, PromptDigest: promptDigest,
+			Recording: recording.Recorded(), DirtyTail: dirty || b.contextStale(q) || recording.HasGaps()}
+		b.setSessionStateFor(piSessionID, state)
+		expected, unsaved = state, state
+		b.debugf("session-recorded: ccSession=%s digests=%d dirtyTail=%t piSession=%s", short(target), len(state.Digests), state.DirtyTail, piSessionID)
+	}
+	// persist saves the latest committed snapshot once the child has exited, and
+	// only while it is still the session's current one.
+	persist := func() error {
+		<-exited
+		commitMu.Lock()
+		state := unsaved
+		unsaved = nil
+		commitMu.Unlock()
+		if state == nil || piSessionID == "" || b.sessionStateFor(piSessionID) != state {
+			return nil
+		}
+		return SaveSessionState(b.deps.AgentDir, piSessionID, *state)
+	}
+	q.mu.Lock()
+	q.commitRecording = commit
+	q.mu.Unlock()
 
 	var abortOnce sync.Once
 	onAbort := func() {
 		abortOnce.Do(func() {
 			// context.AfterFunc runs this on a goroutine of its own.
 			defer b.recoverHandler("abort")
+			// The final snapshot for an aborted query, before anything is torn down.
+			commit(true)
+			b.unregisterContext(q)
+			q.mu.Lock()
+			q.turnToolCallIDs = []string{}
+			q.mu.Unlock()
 			b.drainForAbort(q)
 			// Interrupt asks the CLI to stop gracefully and close kills it; both are needed.
 			b.killClient(client)
@@ -430,7 +559,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	q.abort = onAbort
 	q.mu.Unlock()
 
-	complete := func(res consumeResult) { b.completeQuery(q, client, syncResult, cwd, len(messages), res) }
+	complete := func(res consumeResult) { b.completeQuery(q, client, syncResult, res, commit, persist) }
 	go func() {
 		defer b.queries.Done()
 		defer func() {
@@ -441,12 +570,94 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 			unbind()
 			q.mu.Lock()
 			q.bindRunSignal = nil
+			q.commitRecording = nil
 			q.mu.Unlock()
 			cancelQuery()
+			stopWriting()
+			if err := persist(); err != nil {
+				b.debugf("provider: saving session state after exit: %v", err)
+			}
+			if syncResult.Created && !recording.HasProgress() {
+				if err := ccsession.Delete(target, cwd, ""); err != nil {
+					b.debugf("provider: could not delete session %s without progress: %v", short(target), err)
+				} else {
+					b.debugf("provider: deleted session %s: no complete assistant progress", short(target))
+				}
+			}
+			b.releaseWriter(target, exited)
 		}()
 		b.runConsume(queryCtx, host, q, client, complete)
 	}()
 	return stream
+}
+
+// completeQuery is the normal end of a query: record what the turn emitted, commit
+// the recording, save it once the child exits, then finish the stream. A Claude
+// Code session other than the one synced is a protocol violation: fatal, nothing
+// committed, the turn still ends.
+func (b *Bridge) completeQuery(q *QueryContext, client ccproto.Client, syncResult SyncResult, res consumeResult, commit func(bool), persist func() error) {
+	if captured := res.CapturedSessionID; captured != "" && captured != syncResult.TargetSessionID {
+		err := fmt.Errorf("Claude Code initialized unexpected session %s; expected %s", captured, syncResult.TargetSessionID)
+		b.debugf("provider: %v", err)
+		b.failStream(q, err)
+		return
+	}
+	q.mu.Lock()
+	if q.currentPiStream != nil {
+		b.recordAssistantEmissionLocked(q)
+	}
+	sawResult := q.sawResult
+	q.mu.Unlock()
+	commit(!sawResult)
+	// Completion waits for the save, so a failed one ends the turn with it. The child
+	// has its stdin ended by now; closing makes sure it exits.
+	closeCtx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	_ = client.Close(closeCtx)
+	cancel()
+	if err := persist(); err != nil {
+		b.debugf("provider: saving session state failed: %v", err)
+		b.failStream(q, err)
+		return
+	}
+	q.mu.Lock()
+	if q.activeQuery == client {
+		b.debugf("provider: clearing activeQuery before final stream completion")
+		q.activeQuery = nil
+	}
+	stopReason, _ := q.turnOutput["stopReason"].(string)
+	q.mu.Unlock()
+	b.unregisterContext(q)
+	b.finalizeCurrentStream(q, stopReason)
+	b.debugf("query-end: outcome=complete ccSession=%s", short(syncResult.TargetSessionID))
+}
+
+// failStream ends the live pi stream with a query failure, leaving a turn whose
+// stream already ended unchanged.
+func (b *Bridge) failStream(q *QueryContext, failure error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.activeQuery = nil
+	if q.turnOutput != nil && q.currentPiStream != nil {
+		q.turnOutput["stopReason"] = "error"
+		if q.turnOutput["errorMessage"] == nil {
+			q.turnOutput["errorMessage"] = failure.Error()
+		}
+		q.endStreamLocked(map[string]any{"type": "error", "reason": "error", "error": deepCopy(q.turnOutput)})
+	}
+}
+
+func orDefault(effort string) string {
+	if effort == "" {
+		return "default"
+	}
+	return effort
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }
 
 // sessionStorageVars are read by the bridge through PiG's own values to find Claude
@@ -471,93 +682,6 @@ func providerEnv(options map[string]any) ([]string, error) {
 		return nil, fmt.Errorf("claude-bridge: provider env can't set %s; the bridge reads Claude Code's session files through PiG's own values", strings.Join(storage, ", "))
 	}
 	return env, nil
-}
-
-func orDefault(effort string) string {
-	if effort == "" {
-		return "default"
-	}
-	return effort
-}
-
-// completeQuery is the normal end of a query: capture the session id into this
-// query's own mirror, then finish the stream. A reentrant subagent completing does
-// not reassign the parent's conversation to the child's Claude Code file.
-func (b *Bridge) completeQuery(q *QueryContext, client ccproto.Client, syncResult SyncResult, cwd string, contextLength int, res consumeResult) {
-	captured := res.CapturedSessionID
-	if syncResult.PreserveSharedSession {
-		state := b.sessionStateFor(q.piSessionID)
-		if captured != "" && (state == nil || captured != state.SessionID) {
-			if err := ccsession.Delete(captured, cwd, ""); err != nil {
-				b.debugf("provider: could not delete ephemeral session %s: %v", short(captured), err)
-			}
-			b.debugf("provider: query done, deleted ephemeral session %s to preserve shared session", short(captured))
-		}
-		b.debugf("provider: query done, ignoring captured session %s to preserve shared session", orNone(short(captured)))
-	} else {
-		q.mu.Lock()
-		latest, missedSteer := q.latestCursor, q.missedSteer
-		q.mu.Unlock()
-		done := ""
-		b.updateSession(q.piSessionID, func(s *legacyState) bool {
-			id := captured
-			if id == "" {
-				id = s.SessionID
-			}
-			if id == "" {
-				return false
-			}
-			cursor := max(contextLength, latest, s.Cursor)
-			done = fmt.Sprintf("provider: query done, session=%s, cursor=%d", short(id), cursor)
-			// A missed steer may precede the first mirror or arrive while this query is
-			// still able to complete: preserve both rebuild signals.
-			s.SessionID, s.Cursor, s.Cwd, s.PiSessionID = id, cursor, cwd, q.piSessionID
-			s.NeedsRebuild = missedSteer || s.NeedsRebuild
-			return true
-		})
-		if done != "" {
-			b.debugf("%s", done) // after updateSession: its fn runs under b.mu, where file I/O does not belong
-		}
-	}
-	q.mu.Lock()
-	if q.activeQuery == client {
-		b.debugf("provider: clearing activeQuery before final stream completion")
-		q.activeQuery = nil
-	}
-	stopReason, _ := q.turnOutput["stopReason"].(string)
-	q.mu.Unlock()
-	b.finalizeCurrentStream(q, stopReason)
-}
-
-func orNone(s string) string {
-	if s == "" {
-		return "none"
-	}
-	return s
-}
-
-// updateSession applies fn to a copy of the mirror (zero when it has none) and
-// stores the result when fn reports true. fn runs under b.mu: it must not call back
-// into the Bridge or do I/O.
-func (b *Bridge) updateSession(piSessionID string, fn func(*legacyState) bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	key := sessionKey(piSessionID)
-	s := b.sessions[key]
-	if fn(&s) {
-		b.sessions[key] = s
-	}
-}
-
-// setCursor moves an existing mirror's cursor; a session with no mirror has none to move.
-func (b *Bridge) setCursor(piSessionID string, cursor int) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	key := sessionKey(piSessionID)
-	if s, ok := b.sessions[key]; ok {
-		s.Cursor = cursor
-		b.sessions[key] = s
-	}
 }
 
 // liveContexts are the queries in the routing set.

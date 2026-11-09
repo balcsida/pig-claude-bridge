@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 
@@ -157,8 +158,8 @@ func (q *QueryContext) endStreamLocked(event map[string]any) {
 }
 
 // finalizeCurrentStream ends the turn's stream: an error event when the turn
-// failed, otherwise done. The events carry copies, so a later change to turnOutput
-// cannot rewrite what pi already received.
+// failed, otherwise done, recording the emitted assistant first. The events carry
+// copies, so a later change to turnOutput cannot rewrite what pi already received.
 func (b *Bridge) finalizeCurrentStream(q *QueryContext, stopReason string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -179,13 +180,15 @@ func (b *Bridge) finalizeCurrentStream(q *QueryContext, stopReason string) {
 	if stopReason == "length" {
 		reason = "length"
 	}
+	b.recordAssistantEmissionLocked(q)
 	q.endStreamLocked(map[string]any{"type": "done", "reason": reason, "message": deepCopy(q.turnOutput)})
 }
 
 // endOnToolUseLocked ends the pi stream on a completed tool call; the MCP handler
-// blocks Claude Code until pi delivers the result on its next call.
-func (q *QueryContext) endOnToolUseLocked() {
+// blocks Claude Code until pi delivers the result on its next call. The caller holds q.mu.
+func (b *Bridge) endOnToolUseLocked(q *QueryContext) {
 	q.turnOutput["stopReason"] = "toolUse"
+	b.recordAssistantEmissionLocked(q)
 	q.endStreamLocked(map[string]any{"type": "done", "reason": "toolUse", "message": deepCopy(q.turnOutput)})
 }
 
@@ -251,6 +254,9 @@ func (b *Bridge) processStreamEvent(q *QueryContext, frame map[string]any) {
 		}
 		q.turnToolCallIDs = []string{}
 		q.turnStreamMessageID = str(msg["id"])
+		if id := q.turnStreamMessageID; id != "" && !slices.Contains(q.turnAssistantIDs, id) {
+			q.turnAssistantIDs = append(q.turnAssistantIDs, id)
+		}
 		q.turnStreamOpen = true
 		q.turnStreamBlockStart = len(q.blocksLocked())
 		if u := obj(msg["usage"]); u != nil {
@@ -321,11 +327,19 @@ func (b *Bridge) processStreamEvent(q *QueryContext, frame map[string]any) {
 			q.emitLocked("thinking_end", index, map[string]any{"content": block["thinking"]})
 		case "toolCall":
 			q.turnSawToolCall = true
-			args := parsePartialJSON(str(block["partialJson"]))
-			if args == nil {
-				args = obj(block["arguments"])
+			// CC's finished tool_use (already tapped into assistantSteps) carries the input
+			// it runs and records, e.g. "5" converted for an integer param (pi-claude-bridge
+			// #242). Copied, so pi can change its arguments without changing the recorded step.
+			if finished := q.finishedToolArgsLocked(str(block["id"])); finished != nil {
+				block["arguments"] = finished
+			} else {
+				b.debugf("WARNING: Claude Code's finished tool_use %s did not arrive before content_block_stop; keeping the streamed arguments", str(block["id"]))
+				args := parsePartialJSON(str(block["partialJson"]))
+				if args == nil {
+					args = obj(block["arguments"])
+				}
+				block["arguments"] = mapToolArgs(str(block["name"]), args)
 			}
-			block["arguments"] = mapToolArgs(str(block["name"]), args)
 			delete(block, "partialJson")
 			q.emitLocked("toolcall_end", index, map[string]any{"toolCall": deepCopy(block)})
 		}
@@ -341,8 +355,8 @@ func (b *Bridge) processStreamEvent(q *QueryContext, frame map[string]any) {
 		q.turnStreamOpen = false
 		if q.turnSawToolCall {
 			// The SDK still yields an assistant message for this turn; the caller skips
-			// it because the stream is gone. Cursor update is the next call's job.
-			q.endOnToolUseLocked()
+			// it because the stream is gone.
+			b.endOnToolUseLocked(q)
 		}
 
 	case "ping":
@@ -433,6 +447,7 @@ func (b *Bridge) dropAbandonedStreamBlocksLocked(q *QueryContext, why string) {
 	}
 	b.debugf("dropAbandonedStreamBlocks: %s; dropped %d blocks from %s types=%s", why, len(types), q.turnStreamMessageID, strings.Join(types, ","))
 	q.turnOutput["content"] = append([]any{}, blocks[:start]...)
+	q.turnAssistantIDs = slices.DeleteFunc(q.turnAssistantIDs, func(id string) bool { return id == q.turnStreamMessageID })
 	q.turnToolCallIDs = []string{}
 	q.turnSawToolCall = q.sawToolCallLocked()
 	q.turnStreamOpen = false
@@ -490,6 +505,9 @@ func (b *Bridge) processAssistantMessage(q *QueryContext, frame map[string]any) 
 	// (the SDK hands a fallback over one block per message).
 	if id != q.turnStreamMessageID {
 		q.turnStreamMessageID = id
+		if id != "" && !slices.Contains(q.turnAssistantIDs, id) {
+			q.turnAssistantIDs = append(q.turnAssistantIDs, id)
+		}
 		q.turnToolCallIDs = []string{}
 	}
 	types := make([]string, 0, len(content))
@@ -541,6 +559,6 @@ func (b *Bridge) processAssistantMessage(q *QueryContext, frame map[string]any) 
 		b.recordUsage(q.turnOutput, parseSdkUsage(u), q.model)
 	}
 	if q.turnSawToolCall && q.currentPiStream != nil {
-		q.endOnToolUseLocked()
+		b.endOnToolUseLocked(q)
 	}
 }

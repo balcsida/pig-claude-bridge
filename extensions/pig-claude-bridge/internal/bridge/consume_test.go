@@ -141,13 +141,18 @@ func terminalEvents(events []map[string]any) []map[string]any {
 
 // --- frames ---
 
-func cev(event string) string { return `{"type":"stream_event","event":` + event + `}` }
+// cev is a main-conversation stream_event frame, as Claude Code sends it (parent_tool_use_id null).
+func cev(event string) string {
+	return `{"type":"stream_event","parent_tool_use_id":null,"event":` + event + `}`
+}
 
 func toolUseFrames(id string) []any {
 	return []any{
 		cev(`{"type":"message_start","message":{"id":"msg_` + id + `","usage":{}}}`),
 		cev(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"` + id + `","name":"mcp__custom-tools__read","input":{}}}`),
 		cev(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a\"}"}}`),
+		// Claude Code echoes the completed block, with the input it will run, before closing it.
+		assistantEcho("msg_"+id, map[string]any{"type": "tool_use", "id": id, "name": "mcp__custom-tools__read", "input": map[string]any{"path": "a"}}),
 		cev(`{"type":"content_block_stop","index":0}`),
 		cev(`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{}}`),
 		cev(`{"type":"message_stop"}`),
@@ -218,7 +223,7 @@ func TestToolResultQueue(t *testing.T) {
 		return h
 	}
 	deliver := func(h *consumeHarness, results ...convert.McpResult) {
-		h.b.deliverToolResults(context.Background(), h.host, h.q, results, nil, 4)
+		h.b.deliverToolResults(context.Background(), h.host, h.q, results, nil, nil)
 	}
 
 	t.Run("hands a handler the result that arrived before it, isError included", func(t *testing.T) {
@@ -330,7 +335,7 @@ func TestAbandoningAQuery(t *testing.T) {
 		h := newConsumeHarness(t, "alpha", "beta", "gamma")
 		one, two := h.call(t, "alpha", "toolu_1"), h.call(t, "beta", "toolu_2")
 		waitParked(t, h.q, 2)
-		h.b.deliverToolResults(context.Background(), h.host, h.q, []convert.McpResult{mcpResult("toolu_3", "r3", false)}, nil, 4) // queued, no handler ever came
+		h.b.deliverToolResults(context.Background(), h.host, h.q, []convert.McpResult{mcpResult("toolu_3", "r3", false)}, nil, nil) // queued, no handler ever came
 
 		h.q.releasePendingToolCalls("Query ended")
 
@@ -357,7 +362,7 @@ func TestAbandoningAQuery(t *testing.T) {
 		delivered := make(chan struct{})
 		go func() {
 			defer close(delivered)
-			h.b.deliverToolResults(context.Background(), h.host, h.q, []convert.McpResult{mcpResult("toolu_1", "r1", false)}, []any{map[string]any{"type": "text", "text": "stop"}}, 4)
+			h.b.deliverToolResults(context.Background(), h.host, h.q, []convert.McpResult{mcpResult("toolu_1", "r1", false)}, []any{map[string]any{"type": "text", "text": "stop"}}, nil)
 		}()
 		select {
 		case <-delivered:
@@ -393,7 +398,7 @@ func TestDeliveringAnExtractedTurnToItsHandlers(t *testing.T) {
 		{"role": "user", "content": "steer"},
 		{"role": "toolResult", "toolCallId": "toolu_2", "content": "ran the command"},
 	})
-	h.b.deliverToolResults(context.Background(), h.host, h.q, results, nil, 5)
+	h.b.deliverToolResults(context.Background(), h.host, h.q, results, nil, nil)
 
 	if got := receive(t, alpha, "reply").Text; got != "read the file" {
 		t.Fatalf("alpha = %q", got)
@@ -455,7 +460,7 @@ func TestDeliverToolResults(t *testing.T) {
 		return PendingToolCall{ToolName: name, Resolve: func(convert.McpResult) { s.rec.add("resolve:" + name) }}
 	}
 	deliver := func(s *setup, results []convert.McpResult, steer []any) {
-		s.b.deliverToolResults(context.Background(), nil, s.q, results, steer, 4)
+		s.b.deliverToolResults(context.Background(), nil, s.q, results, steer, nil)
 	}
 	result := func(id string) convert.McpResult { return mcpResult(id, "ok", false) }
 
@@ -495,39 +500,10 @@ func TestDeliverToolResults(t *testing.T) {
 		}
 	})
 
-	// The caller has already advanced the session cursor past the steer, so a steer
-	// that never reached CC would be skipped forever by count-based sync.
-	t.Run("marks the session for rebuild when the push is rejected, and still delivers results", func(t *testing.T) {
-		s := newDelivery(t, "reject")
-		s.q.pendingToolCalls["call-1"] = handler(s, "read")
-		s.b.setSessionStateFor("", &legacyState{SessionID: "abc", Cursor: 3, Cwd: "/tmp"})
-		deliver(s, []convert.McpResult{result("call-1")}, steerText)
-		want := []string{"push:actually stop", "push-rejected", "resolve:read"}
-		if got := s.rec.list(); !reflect.DeepEqual(got, want) {
-			t.Fatalf("order = %v, want %v", got, want)
-		}
-		if state := s.b.sessionStateFor(""); state == nil || !state.NeedsRebuild {
-			t.Fatalf("state = %+v", state)
-		}
-		if !s.q.missedSteer {
-			t.Fatal("missedSteer not set")
-		}
-	})
-
-	t.Run("marks the session for rebuild when there is no prompt stream", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		q := newQueryContext()
-		b.setSessionStateFor("", &legacyState{SessionID: "abc", Cursor: 3, Cwd: "/tmp"})
-		b.deliverToolResults(context.Background(), nil, q, nil, steerText, 4)
-		if state := b.sessionStateFor(""); state == nil || !state.NeedsRebuild {
-			t.Fatalf("state = %+v", state)
-		}
-	})
-
 	t.Run("queues a result whose handler has not arrived yet", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		q := newQueryContext()
-		b.deliverToolResults(context.Background(), nil, q, []convert.McpResult{result("call-late")}, nil, 4)
+		b.deliverToolResults(context.Background(), nil, q, []convert.McpResult{result("call-late")}, nil, nil)
 		if q.pendingResults["call-late"].ToolCallID != "call-late" || len(q.pendingToolCalls) != 0 {
 			t.Fatalf("pending = %v / %v", q.pendingResults, q.pendingToolCalls)
 		}
@@ -548,42 +524,11 @@ func TestDeliverToolResults(t *testing.T) {
 		s := newDelivery(t, "ack")
 		host := &recordingHost{}
 		s.q.pendingToolCalls["call-1"] = handler(s, "read")
-		s.b.deliverToolResults(context.Background(), host, s.q, []convert.McpResult{result("other")}, nil, 4)
+		s.b.deliverToolResults(context.Background(), host, s.q, []convert.McpResult{result("other")}, nil, nil)
 		if len(host.notices) != 1 || !strings.Contains(host.notices[0], "1 tool handler(s) still waiting") {
 			t.Fatalf("notices = %v", host.notices)
 		}
 	})
-}
-
-// A steer into a prompt stream that already failed is a missed steer, with or
-// without an earlier mirror (the consume-loop part of unit-cross-session-turns.mjs;
-// the completion that must carry the mark is Task 20).
-func TestMissedSteerAfterFailedPromptStream(t *testing.T) {
-	steer := []any{map[string]any{"type": "text", "text": "missed steer"}}
-	for _, hasMirror := range []bool{true, false} {
-		name := "rebuilds even without an existing mirror"
-		if hasMirror {
-			name = "marks the existing mirror for rebuild"
-		}
-		t.Run(name, func(t *testing.T) {
-			b, _, _ := newTestBridge(t, false)
-			q := newQueryContext()
-			q.piSessionID = "pi-parent"
-			q.promptStream = newPromptStream()
-			q.promptStream.Fail(errors.New("prompt stream closed"))
-			if hasMirror {
-				b.setSessionStateFor("pi-parent", &legacyState{SessionID: "cc", Cursor: 3, PiSessionID: "pi-parent"})
-			}
-			b.deliverToolResults(context.Background(), nil, q, nil, steer, 4)
-			if !q.missedSteer || len(q.pendingSteerUUIDs) != 0 {
-				t.Fatalf("missedSteer=%t uuids=%v", q.missedSteer, q.pendingSteerUUIDs)
-			}
-			state := b.sessionStateFor("pi-parent")
-			if hasMirror != (state != nil && state.NeedsRebuild) {
-				t.Fatalf("state = %+v", state)
-			}
-		})
-	}
 }
 
 // --- unit-queued-steer.mjs ---
@@ -607,7 +552,7 @@ func newSteerHarness(t *testing.T) *steerHarness {
 }
 
 func (h *steerHarness) steer(n int) {
-	h.b.deliverToolResults(h.ctx, h.host, h.q, nil, []any{map[string]any{"type": "text", "text": "Continue with the next tool."}}, n)
+	h.b.deliverToolResults(h.ctx, h.host, h.q, nil, []any{map[string]any{"type": "text", "text": "Continue with the next tool."}}, nil)
 }
 
 func (h *steerHarness) assertClosed(t *testing.T) {
@@ -632,8 +577,8 @@ func TestQueuedSteer(t *testing.T) {
 
 		h.steer(2)
 		sent := h.writer.writes()
-		if h.q.missedSteer || sent[0].UUID == sent[1].UUID {
-			t.Fatalf("missed=%t uuids=%q/%q", h.q.missedSteer, sent[0].UUID, sent[1].UUID)
+		if sent[0].UUID == sent[1].UUID {
+			t.Fatalf("uuids=%q/%q", sent[0].UUID, sent[1].UUID)
 		}
 		h.consumeFrames(replayOf(t, first, nil), successFrame())
 		if err := h.q.promptStream.Push(context.Background(), userMessage("input still connected", "")); err != nil {
@@ -685,8 +630,8 @@ func TestQueuedSteer(t *testing.T) {
 		h.steer(1)
 		h.consumeFrames(successFrame())
 		receive(t, h.pumpDone, "the writer to finish")
-		if !h.q.missedSteer || len(h.q.pendingSteerUUIDs) != 0 {
-			t.Fatalf("missed=%t uuids=%v", h.q.missedSteer, h.q.pendingSteerUUIDs)
+		if len(h.q.pendingSteerUUIDs) != 0 {
+			t.Fatalf("a rejected steer must not keep stdin open: uuids=%v", h.q.pendingSteerUUIDs)
 		}
 		if err := h.q.promptStream.Push(context.Background(), userMessage("too late", "")); err == nil {
 			t.Fatal("push accepted after the failed write")
@@ -880,24 +825,14 @@ func TestDiscardRewrittenQuery(t *testing.T) {
 		}
 	})
 
-	t.Run("rotates the session id of the discarding session's own mirror, because the rebuild follows the kill immediately", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-parent", &legacyState{SessionID: "abc", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-parent"})
-		p := parkedQuery(t, b, "call_1", "pi-parent")
-		b.discardRewrittenQuery(p.q, discardReason)
-		if s := b.sessionStateFor("pi-parent"); s == nil || !s.ForceRotate || !s.NeedsRebuild {
-			t.Fatalf("state = %+v", s)
-		}
-	})
-
 	t.Run("leaves a foreign session's mirror untouched when the foreign query discards", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-parent", &legacyState{SessionID: "parent", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-parent"})
+		b.setSessionStateFor("pi-parent", &SessionState{CCSessionID: "parent", Cwd: "/tmp", Model: "m", PromptDigest: "p", Recording: emptyRecording()})
 		p := parkedQuery(t, b, "call_1", "pi-b")
 		b.markRebuildForSession("pi-b", "session_compact:threshold")
 		b.armStaleContexts()
 		b.discardRewrittenQuery(p.q, discardReason)
-		if s := b.sessionStateFor("pi-parent"); s.NeedsRebuild || s.ForceRotate {
+		if s := b.sessionStateFor("pi-parent"); s.DirtyTail {
 			t.Fatalf("the child's rebuild must not touch the parent's mirror: %+v", s)
 		}
 		if b.sessionStateFor("pi-b") != nil {
@@ -988,7 +923,7 @@ func TestAbortOnARunThatContinuesAParkedQuery(t *testing.T) {
 		runCtx, cancel := context.WithCancel(context.Background())
 		c.bind(runCtx, c.second)
 		c.client.emit(textStartFrames()...)
-		waitFor(t, "the essay to start", func() bool { return c.client.sent.Load() == 9 })
+		waitFor(t, "the essay to start", func() bool { return c.client.sent.Load() == 10 })
 		cancel()
 		receive(t, c.done, "the abort to end the query")
 		events := terminalEvents(drain(c.second))
@@ -1312,7 +1247,7 @@ func TestConsumeLoop(t *testing.T) {
 		cancelFirst()
 		<-firstDone
 
-		h.b.deliverToolResults(context.Background(), nil, h.q, []convert.McpResult{{ToolCallID: "toolu_1", Content: convert.McpContent{{"type": "text", "text": "file"}}}}, nil, 3)
+		h.b.deliverToolResults(context.Background(), nil, h.q, []convert.McpResult{{ToolCallID: "toolu_1", Content: convert.McpContent{{"type": "text", "text": "file"}}}}, nil, nil)
 		if got := receive(t, second, "the second call's result"); got.Content[0]["text"] != "file" {
 			t.Fatalf("result = %+v", got)
 		}
@@ -1375,10 +1310,10 @@ func (*panicHost) Notify(string, string) { panic("host exploded") }
 
 // --- Review Focus 4 ---
 
-func TestProcessExitWhileParkedReleasesHandlerAndMarksRebuild(t *testing.T) {
+func TestProcessExitWhileParkedReleasesHandler(t *testing.T) {
 	h := newConsumeHarness(t, "read")
 	h.q.piSessionID = "pi-exit"
-	h.b.setSessionStateFor("pi-exit", &legacyState{SessionID: "abc", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-exit"})
+
 	done := h.start()
 	reply := h.call(t, "read", "toolu_1")
 	waitParked(t, h.q, 1)
@@ -1402,9 +1337,6 @@ func TestProcessExitWhileParkedReleasesHandlerAndMarksRebuild(t *testing.T) {
 	msg := str(obj(errorEvents[0]["error"])["errorMessage"])
 	if !strings.Contains(msg, "boom") || !strings.Contains(msg, "exited with code 1") || strings.Count(msg, "boom") != 1 {
 		t.Fatalf("message = %q", msg)
-	}
-	if state := h.b.sessionStateFor("pi-exit"); state == nil || !state.NeedsRebuild {
-		t.Fatalf("state = %+v", state)
 	}
 	if len(parkedIDs(h.q)) != 0 {
 		t.Fatal("a handler is still parked")
@@ -1483,17 +1415,6 @@ func TestATurnStillStreaming(t *testing.T) {
 		})
 	}
 
-	t.Run("drops the session mirror at an error result, so a queued steer is rebuilt", func(t *testing.T) {
-		h := newConsumeHarness(t)
-		h.q.piSessionID = "pi-finalized"
-		h.b.setSessionStateFor("pi-finalized", &legacyState{SessionID: "cc", Cursor: 2, PiSessionID: "pi-finalized"})
-		h.client.emit(textStartFrames()...)
-		h.client.emit(errorResultFrame())
-		receive(t, h.start(), "teardown")
-		if h.b.sessionStateFor("pi-finalized") != nil {
-			t.Fatal("the mirror survived the error result")
-		}
-	})
 }
 
 func TestAbortedQueryDropsItsHeldRateLimitEvent(t *testing.T) {

@@ -97,7 +97,7 @@ func TestIsolatedSummaryCwd(t *testing.T) {
 			}
 			for _, id := range []string{"one", "two"} {
 				host := &fakeHost{sessionID: id, cwd: t.TempDir()}
-				h.b.OnSessionStart(host, "startup")
+				h.b.OnSessionStart(host, "startup", "")
 				if operation == "compaction" {
 					h.b.OnSessionBeforeCompact(host)
 				} else {
@@ -125,8 +125,8 @@ func TestIsolatedSummaryCwd(t *testing.T) {
 	t.Run("overlapping operations: the later one's session owns both sessions' calls (D7)", func(t *testing.T) {
 		h := newProviderHarness(t, nil)
 		one, two := &fakeHost{sessionID: "one", cwd: t.TempDir()}, &fakeHost{sessionID: "two", cwd: t.TempDir()}
-		h.b.OnSessionStart(one, "startup")
-		h.b.OnSessionStart(two, "startup")
+		h.b.OnSessionStart(one, "startup", "")
+		h.b.OnSessionStart(two, "startup", "")
 		h.b.OnSessionBeforeCompact(one)
 		h.b.OnSessionBeforeCompact(two)
 		for _, host := range []*fakeHost{one, two} {

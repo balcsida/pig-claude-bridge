@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,6 +66,56 @@ type spawn struct {
 	opts     ccproto.Options
 	handlers ccproto.Handlers
 	client   *fakeClient
+	// records are the transcript records the fake has written (see recordTranscript).
+	records []fakeRecord
+}
+
+// recordTranscript keeps the session records Claude Code would write for what the fake
+// receives and echoes: a user record for each stdin message under its uuid, and a
+// record for each echoed assistant or user frame under the frame's uuid. The sync
+// resolves cuts against these. Scripts emit their echoes at spawn, before the prompt
+// is written, so a stdin record is placed after the last stdin record rather than
+// at the end: Claude Code writes the input before anything that answers it.
+func (h *providerHarness) recordTranscript(s *spawn, typ, uuid string, message any, fromStdin bool) {
+	if uuid == "" || s.opts.Cwd == "" {
+		return
+	}
+	id := ccSession(s)
+	path := ccsession.SessionPath("", s.opts.Cwd, id)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := fakeRecord{typ: typ, uuid: uuid, message: message, stdin: fromStdin}
+	at := len(s.records)
+	if fromStdin {
+		at = 0
+		for i, r := range s.records {
+			if r.stdin {
+				at = i + 1
+			}
+		}
+	}
+	s.records = append(s.records[:at], append([]fakeRecord{rec}, s.records[at:]...)...)
+	var out []byte
+	var parent any
+	for _, r := range s.records {
+		line, _ := json.Marshal(map[string]any{"type": r.typ, "uuid": r.uuid, "parentUuid": parent, "sessionId": id, "message": r.message})
+		out = append(append(out, line...), '\n')
+		parent = r.uuid
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = os.WriteFile(path, out, 0o644)
+}
+
+type fakeRecord struct {
+	typ, uuid string
+	message   any
+	stdin     bool
+}
+
+// toolResultEcho is the user frame Claude Code echoes once a tool result reached it.
+func toolResultEcho(id string) map[string]any {
+	return map[string]any{"type": "user", "parent_tool_use_id": nil, "uuid": fmt.Sprintf("echo-%d", echoSeq.Add(1)),
+		"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": id, "content": "file"}}}}
 }
 
 // providerHarness serves provider calls with scripted fake processes. The claude
@@ -122,6 +174,14 @@ func newProviderHarness(t *testing.T, mutate func(*Deps)) *providerHarness {
 
 func (h *providerHarness) spawn(_ context.Context, o ccproto.Options, hd ccproto.Handlers) (ccproto.Client, error) {
 	s := &spawn{opts: o, handlers: hd, client: newFakeClient()}
+	s.client.onWritten = func(msg ccproto.UserMessage) {
+		h.recordTranscript(s, "user", msg.UUID, map[string]any{"role": "user", "content": msg.Content}, true)
+	}
+	s.client.onEmit = func(frame map[string]any) {
+		if uuid := str(frame["uuid"]); (frame["type"] == "assistant" || frame["type"] == "user") && uuid != "" {
+			h.recordTranscript(s, str(frame["type"]), uuid, frame["message"], false)
+		}
+	}
 	h.mu.Lock()
 	h.spawned = append(h.spawned, s)
 	var script func(*spawn)
@@ -188,11 +248,35 @@ func (h *providerHarness) liveFor(piSessionID string) *QueryContext {
 // --- scripted frames and pi-side messages ---
 
 // initFrame is Claude Code's init: the session it resumed, else a new one.
+// initFrame echoes the session Claude Code runs: the target named by --session-id (a
+// fresh launch or a fork), else the one resumed, else id (a fake with no sync).
 func initFrame(s *spawn, id string) map[string]any {
-	if s.opts.Resume != "" {
+	switch {
+	case s.opts.SessionID != "":
+		id = s.opts.SessionID
+	case s.opts.Resume != "":
 		id = s.opts.Resume
 	}
+	// Claude Code creates the session file at init; the sync stats it before reusing.
+	if path := ccsession.SessionPath("", s.opts.Cwd, id); s.opts.Cwd != "" {
+		if _, err := os.Stat(path); err != nil {
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			_ = os.WriteFile(path, nil, 0o644)
+		}
+	}
 	return map[string]any{"type": "system", "subtype": "init", "session_id": id}
+}
+
+// ccSession is the Claude Code session a spawn ran, as initFrame reports it.
+func ccSession(s *spawn) string { return str(initFrame(s, "")["session_id"]) }
+
+var echoSeq atomic.Int64
+
+// assistantEcho is the completed assistant message Claude Code echoes after a
+// stream, with the record uuid the recording pins the step to.
+func assistantEcho(id string, content ...any) map[string]any {
+	return map[string]any{"type": "assistant", "parent_tool_use_id": nil, "uuid": fmt.Sprintf("echo-%d", echoSeq.Add(1)),
+		"message": map[string]any{"id": id, "model": "claude-haiku-4-5", "content": content}}
 }
 
 func textReplyFrames(text string) []any {
@@ -200,6 +284,8 @@ func textReplyFrames(text string) []any {
 		cev(`{"type":"message_start","message":{"id":"msg_text","usage":{}}}`),
 		cev(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
 		cev(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + jsonString(text) + `}}`),
+		// Claude Code echoes the completed block before closing it.
+		assistantEcho("msg_text", map[string]any{"type": "text", "text": text}),
 		cev(`{"type":"content_block_stop","index":0}`),
 		cev(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}`),
 		cev(`{"type":"message_stop"}`),
@@ -351,7 +437,7 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 	h := newProviderHarness(t, func(d *Deps) { d.Config.Provider.ForceTwoHundredK = []string{"claude-opus-5-5"} })
 	cwd := t.TempDir()
 	h.host.cwd, h.host.sessionID = cwd, "pi-options"
-	h.b.OnSessionStart(h.host, "startup")
+	h.b.OnSessionStart(h.host, "startup", "")
 	h.b.OnBeforeAgentStart(h.host, "SYSTEM", map[string]any{"appendSystemPrompt": "APPEND"})
 	h.script(answers("cc-options", "ok"))
 	model := map[string]any{"api": "anthropic-messages", "provider": "anthropic", "id": "claude-opus-5-5"}
@@ -376,6 +462,11 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 		},
 		SDKMcpServers: []string{"custom-tools"}, AppendSystemPrompt: "APPEND",
 		ExtraArgs: []ccproto.ExtraArg{{Key: "model", Value: &opus}, {Key: "replay-user-messages"}, {Key: "strict-mcp-config"}, {Key: "thinking-display", Value: &summarized}},
+		// A clean start names the session the sync minted.
+		SessionID: got.SessionID,
+	}
+	if !uuidPattern.MatchString(got.SessionID) {
+		t.Fatalf("a clean start must name its session: %q", got.SessionID)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("options\n got  %+v\n want %+v", got, want)
@@ -410,7 +501,7 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 	}
 	argv := ccproto.BuildArgs(got)
 	// settingSources:["user"] postdates the snapshot (pi-claude-bridge #198); the want above pins it.
-	argv = slices.DeleteFunc(argv, func(a string) bool { return a == "--setting-sources=user" })
+	argv = slices.DeleteFunc(argv, func(a string) bool { return a == "--setting-sources=user" || strings.HasPrefix(a, "--session-id=") })
 	if len(argv) != len(snap.Argv) {
 		t.Fatalf("argv\n got  %q\n want %q", argv, snap.Argv)
 	}
@@ -472,10 +563,11 @@ func TestStreamSimpleOptionsVariants(t *testing.T) {
 		h := newProviderHarness(t, nil)
 		h.script(answers("cc-first", "one"))
 		finalOf(t, h.call(context.Background(), "pi-resume", msgs(userMsg("hi"))))
+		first := ccSession(h.lastSpawn())
 		h.script(answers("cc-second", "two"))
 		finalOf(t, h.call(context.Background(), "pi-resume", msgs(userMsg("hi"), sayMsg("one"), userMsg("again"))))
-		if got := h.lastSpawn().opts.Resume; got != "cc-first" {
-			t.Fatalf("resume = %q", got)
+		if got := h.lastSpawn().opts; got.Resume != first || got.SessionID != "" || got.ForkSession {
+			t.Fatalf("an unchanged history reuses the session: %+v", got)
 		}
 	})
 	t.Run("debug adds the CLI debug file and forwards stderr lines into the bridge log", func(t *testing.T) {
@@ -523,6 +615,7 @@ func TestStreamSimpleDeliversAToolResultToItsParkedQuery(t *testing.T) {
 	if got := receive(t, reply, "the tool reply"); got.Text != "file" || got.IsError {
 		t.Fatalf("handler reply = %+v", got)
 	}
+	s.client.emit(toolResultEcho("toolu_1"))
 	s.client.emit(textReplyFrames("done")...)
 	finish(s, "done")
 	if got := finalOf(t, second); replyText(got) != "done" {
@@ -532,7 +625,7 @@ func TestStreamSimpleDeliversAToolResultToItsParkedQuery(t *testing.T) {
 		t.Fatalf("spawns = %d, the result must not start a query", len(h.spawns()))
 	}
 	h.waitLive(0)
-	if st := h.b.sessionStateFor("pi-deliver"); st == nil || st.SessionID != "cc-deliver" || st.Cursor != 3 {
+	if st := h.b.sessionStateFor("pi-deliver"); st == nil || st.CCSessionID != ccSession(s) {
 		t.Fatalf("mirror = %+v", st)
 	}
 }
@@ -666,20 +759,29 @@ func TestCrossSessionConversationIsolation(t *testing.T) {
 		// The parent's first turn stays open until the child below has run, so the
 		// child's completion lands inside the parent's turn.
 		h.script(parksOnTool("cc-P", "toolu_P1"))
-		p1 := h.call(context.Background(), P, msgs(u1))
+		p1 := h.call(context.Background(), P, msgs(u1), readTool)
 		parent := h.lastSpawn()
+		if got := finalOf(t, p1); got["stopReason"] != "toolUse" {
+			t.Fatalf("parent turn 1 = %v", got["stopReason"])
+		}
 		h.script(answers("cc-C", "child answer"))
 		finalOf(t, h.call(context.Background(), C, msgs(userMsg("child task"))))
 
+		// pi delivers the parent's tool result into its parked query, which echoes it.
+		reply := callTool(context.Background(), spawnMcp{parent}, "read", "toolu_P1")
+		waitParked(t, h.liveFor(P), 1)
+		p1b := h.call(context.Background(), P, msgs(u1, a1, tr1), readTool)
+		receive(t, reply, "the tool reply")
+		parent.client.emit(toolResultEcho("toolu_P1"))
 		parent.client.emit(textReplyFrames("parent answer")...)
 		finish(parent, "parent answer")
-		finalOf(t, p1)
+		finalOf(t, p1b)
 		h.waitLive(0)
 
 		h.script(answers("cc-P2", "ok"))
 		finalOf(t, h.call(context.Background(), P, msgs(u1, a1, tr1, a2, u2)))
-		if got := h.lastSpawn().opts.Resume; got != "cc-P" {
-			t.Fatalf("the parent's turn 2 resumes %q, want its own conversation cc-P", got)
+		if got := h.lastSpawn().opts.Resume; got != ccSession(parent) {
+			t.Fatalf("the parent's turn 2 resumes %q, want its own conversation %s", got, ccSession(parent))
 		}
 	})
 
@@ -689,7 +791,8 @@ func TestCrossSessionConversationIsolation(t *testing.T) {
 
 		h.script(answers("cc-P", "parent answer"))
 		finalOf(t, h.call(context.Background(), P, msgs(u1)))
-		if st := h.b.sessionStateFor(P); st == nil || st.SessionID != "cc-P" {
+		parentCC := ccSession(h.lastSpawn())
+		if st := h.b.sessionStateFor(P); st == nil || st.CCSessionID != parentCC {
 			t.Fatalf("mirror = %+v", st)
 		}
 
@@ -700,123 +803,21 @@ func TestCrossSessionConversationIsolation(t *testing.T) {
 
 		h.script(answers("cc-P2", "ok"))
 		finalOf(t, h.call(context.Background(), P, msgs(u1, a2, u2)))
-		if got := h.lastSpawn().opts.Resume; got != "cc-P" {
+		if got := h.lastSpawn().opts.Resume; got != parentCC {
 			t.Fatalf("the parent keeps resuming its own conversation, got %q", got)
 		}
+		parentCC2 := ccSession(h.lastSpawn())
 
 		childProc.client.emit(textReplyFrames("child answer")...)
 		finish(childProc, "child answer")
 		finalOf(t, child)
 		h.waitLive(0)
 
-		if st := h.b.sessionStateFor(P); st == nil || st.SessionID != "cc-P" {
+		if st := h.b.sessionStateFor(P); st == nil || st.CCSessionID != parentCC2 {
 			t.Fatalf("the child's completion reassigned the parent's conversation: %+v", st)
 		}
-		if st := h.b.sessionStateFor(C); st == nil || st.SessionID != "cc-C" || st.PiSessionID != C {
+		if st := h.b.sessionStateFor(C); st == nil || st.CCSessionID != ccSession(childProc) {
 			t.Fatalf("the child keeps its own conversation, tagged with its session: %+v", st)
-		}
-	})
-
-	// missedSteer fails the live query's prompt stream and delivers a steer to it,
-	// modelling the provider's tool-result path counting a steer the CLI never took.
-	missedSteer := func(h *providerHarness, session, text string, contextLength int) *QueryContext {
-		q := h.liveFor(session)
-		q.mu.Lock()
-		ps := q.promptStream
-		q.mu.Unlock()
-		ps.Fail(errors.New("prompt stream closed"))
-		h.b.deliverToolResults(context.Background(), h.host, q, nil, []any{map[string]any{"type": "text", "text": text}}, contextLength)
-		return q
-	}
-
-	t.Run("a missed steer survives successful completion and rebuilds the next turn", func(t *testing.T) {
-		h := newProviderHarness(t, nil)
-		u1, a1, u2, missed, a2, u3 := userMsg("first"), sayMsg("first answer"), userMsg("second"), userMsg("missed steer"), sayMsg("second answer"), userMsg("third")
-
-		h.script(answers("cc-missed", "first answer"))
-		finalOf(t, h.call(context.Background(), P, msgs(u1)))
-
-		h.script(func(s *spawn) { s.client.emit(initFrame(s, "cc-P2")) })
-		second := h.call(context.Background(), P, msgs(u1, a1, u2))
-		secondProc := h.lastSpawn()
-		if secondProc.opts.Resume != "cc-missed" {
-			t.Fatalf("resume = %q", secondProc.opts.Resume)
-		}
-
-		q := missedSteer(h, P, "missed steer", 4)
-		h.b.setCursor(P, 4)
-		q.mu.Lock()
-		q.latestCursor = 4
-		q.mu.Unlock()
-		if st := h.b.sessionStateFor(P); !st.NeedsRebuild {
-			t.Fatal("the missed steer must mark the mirror")
-		}
-		secondProc.client.emit(textReplyFrames("second answer")...)
-		finish(secondProc, "second answer")
-		finalOf(t, second)
-		h.waitLive(0)
-		if st := h.b.sessionStateFor(P); !st.NeedsRebuild {
-			t.Fatal("completion must not forget the missed steer")
-		}
-
-		cwd, _ := os.Getwd()
-		rebuilt := h.sessionFile("cc-missed", cwd)
-		if _, err := os.Stat(rebuilt); err == nil {
-			t.Fatal("the fake process has not written a session file")
-		}
-		h.script(answers("cc-P3", "third answer"))
-		finalOf(t, h.call(context.Background(), P, msgs(u1, a1, u2, missed, a2, u3)))
-		data, err := os.ReadFile(rebuilt)
-		if err != nil {
-			t.Fatalf("the next turn imports pi history rather than reusing Claude Code's incomplete session: %v", err)
-		}
-		if !strings.Contains(string(data), "missed steer") {
-			t.Fatal("the rebuilt history must include the undelivered steer")
-		}
-		h.waitLive(0)
-		if st := h.b.sessionStateFor(P); st.NeedsRebuild {
-			t.Fatal("the rebuilt turn clears the query's missed-steer mark")
-		}
-	})
-
-	t.Run("a missed steer in the first turn rebuilds even without an existing mirror", func(t *testing.T) {
-		h := newProviderHarness(t, nil)
-		const session = "pi-first-miss"
-		u1, missed, a1, u2 := userMsg("first"), userMsg("missed first-turn steer"), sayMsg("first answer"), userMsg("second")
-
-		h.script(func(s *spawn) { s.client.emit(initFrame(s, "cc-first-missed")) })
-		first := h.call(context.Background(), session, msgs(u1))
-		proc := h.lastSpawn()
-		if h.b.sessionStateFor(session) != nil {
-			t.Fatal("a clean start has no mirror until completion")
-		}
-
-		q := missedSteer(h, session, "missed first-turn steer", 2)
-		q.mu.Lock()
-		q.latestCursor = 2
-		q.mu.Unlock()
-		proc.client.emit(textReplyFrames("first answer")...)
-		finish(proc, "first answer")
-		finalOf(t, first)
-		h.waitLive(0)
-		if st := h.b.sessionStateFor(session); st == nil || !st.NeedsRebuild {
-			t.Fatalf("completion records the miss despite having no earlier mirror: %+v", st)
-		}
-
-		cwd, _ := os.Getwd()
-		rebuilt := h.sessionFile("cc-first-missed", cwd)
-		if _, err := os.Stat(rebuilt); err == nil {
-			t.Fatal("the fake process has not written a session file")
-		}
-		h.script(answers("cc-first-missed", "second answer"))
-		finalOf(t, h.call(context.Background(), session, msgs(u1, missed, a1, u2)))
-		data, err := os.ReadFile(rebuilt)
-		if err != nil || !strings.Contains(string(data), "missed first-turn steer") {
-			t.Fatalf("rebuilt session = %v, %v", err, string(data))
-		}
-		h.waitLive(0)
-		if st := h.b.sessionStateFor(session); st.NeedsRebuild {
-			t.Fatal("the next query starts without the prior miss")
 		}
 	})
 
@@ -826,11 +827,12 @@ func TestCrossSessionConversationIsolation(t *testing.T) {
 
 		h.script(answers("cc-P", "parent answer"))
 		finalOf(t, h.call(context.Background(), P, msgs(u1)))
+		parentCC := ccSession(h.lastSpawn())
 		h.script(answers("cc-C", "child answer"))
 		finalOf(t, h.call(context.Background(), C, msgs(userMsg("child task"))))
 		h.script(answers("cc-P2", "ok"))
 		finalOf(t, h.call(context.Background(), P, msgs(u1, a2, u2)))
-		if got := h.lastSpawn().opts.Resume; got != "cc-P" {
+		if got := h.lastSpawn().opts.Resume; got != parentCC {
 			t.Fatalf("the parent resumes %q after a child ran while it backed off", got)
 		}
 	})
@@ -940,20 +942,24 @@ func TestATurnStillStreamingThroughTheProvider(t *testing.T) {
 			}
 		})
 	}
-	t.Run("drops the session mirror at an error result, so a queued steer is rebuilt", func(t *testing.T) {
+	t.Run("a failing query commits its progress dirty instead of dropping the mirror", func(t *testing.T) {
 		h := newProviderHarness(t, nil)
+		h.script(answers("cc-previous", "previous answer"))
+		finalOf(t, h.call(context.Background(), "pi-finalized-mirror", msgs(userMsg("previous prompt"))))
+		first := ccSession(h.lastSpawn())
+		if st := h.b.sessionStateFor("pi-finalized-mirror"); st == nil || st.DirtyTail {
+			t.Fatalf("a clean completion leaves a clean mirror: %+v", st)
+		}
 		messages := msgs(userMsg("previous prompt"), sayMsg("previous answer"), userMsg("go"))
 		stream, proc := streaming(t, h, "pi-finalized-mirror", context.Background(), messages)
-		if h.b.sessionStateFor("pi-finalized-mirror") == nil {
-			t.Fatal("prior history created a mirror before the query failed")
-		}
 		proc.client.emit(errorResultFrame())
 		proc.client.emit(steerTurn...)
 		proc.client.exit(0, "")
 		finalOf(t, stream)
 		h.waitLive(0)
-		if h.b.sessionStateFor("pi-finalized-mirror") != nil {
-			t.Fatal("the mirror must be dropped")
+		st := h.b.sessionStateFor("pi-finalized-mirror")
+		if st == nil || st.CCSessionID != first || !st.DirtyTail {
+			t.Fatalf("the failed turn must keep the resumed session, dirty: %+v", st)
 		}
 	})
 }
@@ -964,7 +970,7 @@ func TestStreamSimpleRunsClaudeCodeInTheCwdRegisteredAtSessionStart(t *testing.T
 	h := newProviderHarness(t, nil)
 	cwd := t.TempDir()
 	h.host.cwd, h.host.sessionID = cwd, "s-web"
-	h.b.OnSessionStart(h.host, "startup")
+	h.b.OnSessionStart(h.host, "startup", "")
 	h.script(answers("cc-web", "ok"))
 	finalOf(t, h.call(context.Background(), "s-web", msgs(userMsg("hi"))))
 	if got := h.lastSpawn().opts.Cwd; got != cwd {
@@ -1181,7 +1187,7 @@ func TestFastModeReachesClaudeCodeSettingsAndTogglesPerTurn(t *testing.T) {
 	h := newProviderHarness(t, func(d *Deps) { d.Config.Provider.FastMode = &on })
 	cwd := t.TempDir()
 	h.host.cwd, h.host.sessionID = cwd, "pi-fast"
-	h.b.OnSessionStart(h.host, "startup")
+	h.b.OnSessionStart(h.host, "startup", "")
 	h.b.OnBeforeAgentStart(h.host, "SYSTEM", nil)
 	model := map[string]any{"api": "anthropic-messages", "provider": "anthropic", "id": "claude-opus-5-5"}
 	turn := func(id string, history ...map[string]any) any {

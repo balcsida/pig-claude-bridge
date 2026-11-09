@@ -46,11 +46,16 @@ type Bridge struct {
 	deps Deps
 
 	mu sync.Mutex
-	// sessions holds one CC-conversation mirror per pi session, keyed by sessionKey.
-	sessions map[string]legacyState
-	// syncLocks serialise syncSharedSession per session key.
+	// sessions holds one CC-conversation mirror per pi session id (never "").
+	sessions map[string]*SessionState
+	// loaded are the pi session ids whose persisted state has been read once; memory
+	// is authoritative after. known are the ids this process read or wrote state for.
+	loaded, known map[string]bool
+	// writers maps a CC session id to the exit of the child last writing it.
+	writers map[string]<-chan struct{}
+	// syncLocks serialise syncSharedSession per pi session id.
 	syncLocks map[string]*sync.Mutex
-	// historyRewritten holds real pi session ids only, never the "(none)" key.
+	// historyRewritten holds the pi session ids pi rewrote (compact, tree) since their last query.
 	historyRewritten map[string]struct{}
 	// contexts are the live queries armStaleContexts marks.
 	contexts map[*QueryContext]struct{}
@@ -94,7 +99,10 @@ func New(d Deps) *Bridge {
 	}
 	b := &Bridge{
 		deps:             d,
-		sessions:         map[string]legacyState{},
+		sessions:         map[string]*SessionState{},
+		loaded:           map[string]bool{},
+		known:            map[string]bool{},
+		writers:          map[string]<-chan struct{}{},
 		syncLocks:        map[string]*sync.Mutex{},
 		historyRewritten: map[string]struct{}{},
 		contexts:         map[*QueryContext]struct{}{},

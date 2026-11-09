@@ -52,7 +52,6 @@ type QueryContext struct {
 	// heldRateLimit is the latest rate_limit_event not yet reported; CC sends it
 	// after message_stop, so it waits for the next call's stream.
 	heldRateLimit    *RateLimitInfo
-	latestCursor     int
 	pendingToolCalls map[string]PendingToolCall
 	pendingResults   map[string]convert.McpResult
 	// turnToolCallIDs are the tool_use ids emitted this turn; they route a
@@ -60,9 +59,25 @@ type QueryContext struct {
 	turnToolCallIDs []string
 	// promptStream is how steers reach CC mid-turn.
 	promptStream *PromptStream
-	// pendingSteerUUIDs are steers written or awaiting a write, not yet replayed
-	// as incorporated into a turn.
-	pendingSteerUUIDs map[string]struct{}
+	// pendingSteerUUIDs are steers written or awaiting a write, not yet incorporated
+	// into a turn, oldest first: CC runs queued input in order.
+	pendingSteerUUIDs []string
+
+	// recording is this query's live coverage of pi's history.
+	recording *LiveRecording
+	// assistantSteps are the complete SDK blocks keyed by API message id; they survive
+	// resetTurnState and late echoes after the tool-call stream has ended.
+	assistantSteps         map[string]*assistantStep
+	lastAssistantMessageID string
+	turnAssistantIDs       []string
+	turnEmissionRecorded   bool
+	// turnOpener is the input that opens CC's next turn: the query's prompt, then
+	// after each result the oldest steer still pending. Cleared by that turn's first output.
+	turnOpener string
+	sawResult  bool
+	// commitRecording captures this query's progress into the session mirror before
+	// it is killed, discarded or completed; nil until the query has started.
+	commitRecording func(dirty bool)
 	// bindRunSignal binds a later run's cancellation to this query; ctx is nil-safe
 	// (the TypeScript signal may be undefined).
 	bindRunSignal func(ctx context.Context, runStream *sdk.ModelEventStream)
@@ -76,9 +91,6 @@ type QueryContext struct {
 	lastRateLimitWarnThreshold *float64
 	piSessionID                string
 	historyStale               bool // guarded by Bridge.mu, see above
-	// missedSteer: a steer never reached CC; completion must carry this into the
-	// mirror it creates.
-	missedSteer bool
 	// abandoned: discardRewrittenQuery killed this query; its end must not touch the
 	// session or the stream its replacement owns.
 	abandoned bool
@@ -97,12 +109,53 @@ type QueryContext struct {
 	turnFallbackMessageID string
 }
 
+// assistantStep is one API message's completed blocks, as the SDK echoed them (index.ts AssistantStep).
+type assistantStep struct {
+	content []any
+	uuid    string
+	seen    map[string]bool
+	emitted *emittedStep
+}
+
+// emittedStep is the assistant message pi was given, shared by the API messages that made it up.
+type emittedStep struct {
+	digest   string
+	index    int
+	template map[string]any
+	ids      []string
+}
+
 func newQueryContext() *QueryContext {
-	return &QueryContext{
-		pendingToolCalls:  map[string]PendingToolCall{},
-		pendingResults:    map[string]convert.McpResult{},
-		pendingSteerUUIDs: map[string]struct{}{},
+	q := &QueryContext{
+		pendingToolCalls: map[string]PendingToolCall{},
+		pendingResults:   map[string]convert.McpResult{},
+		assistantSteps:   map[string]*assistantStep{},
 	}
+	q.recording, _ = NewLiveRecording(nil, nil)
+	return q
+}
+
+// isAbandoned reports whether discardRewrittenQuery killed c's query.
+func (c *QueryContext) isAbandoned() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.abandoned
+}
+
+// addPendingSteer and removePendingSteer keep the queued steers in write order. The
+// caller holds q.mu; removePendingSteer reports whether the uuid was pending.
+func (c *QueryContext) addPendingSteer(uuid string) {
+	c.pendingSteerUUIDs = append(c.pendingSteerUUIDs, uuid)
+}
+
+func (c *QueryContext) removePendingSteer(uuid string) bool {
+	for i, u := range c.pendingSteerUUIDs {
+		if u == uuid {
+			c.pendingSteerUUIDs = append(c.pendingSteerUUIDs[:i:i], c.pendingSteerUUIDs[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // turnBlocks returns the current turn's content blocks; resetTurnState must have run.
@@ -142,6 +195,9 @@ func (c *QueryContext) resetTurnState(model map[string]any) {
 	c.turnStreamOpen = false
 	c.turnStreamBlockStart = 0
 	c.turnFallbackMessageID = ""
+	c.lastAssistantMessageID = ""
+	c.turnAssistantIDs = nil
+	c.turnEmissionRecorded = false
 }
 
 // newAssistantOutput is an assistant message for model with zeroed usage (index.ts

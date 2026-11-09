@@ -195,7 +195,8 @@ func Extension() *sdk.Extension {
 	ext.OnSessionStart(func(ctx sdk.Context, data map[string]any) (any, error) {
 		defer func() { _ = recover() }()
 		reason, _ := data["reason"].(string)
-		b.OnSessionStart(sdkHost{ctx}, reason)
+		previous, _ := data["previousSessionFile"].(string)
+		b.OnSessionStart(sdkHost{ctx}, reason, previous)
 		return nil, nil
 	})
 	forward := func(event string, fn func(h bridge.Host, data map[string]any)) {

@@ -61,7 +61,7 @@ func TestPromptAndWaitIsolated(t *testing.T) {
 
 func TestPromptAndWaitContinuesTheRememberedSession(t *testing.T) {
 	h := newProviderHarness(t, nil)
-	h.b.setSessionStateFor("pi-1", &legacyState{SessionID: "cc-remembered", PiSessionID: "pi-1"})
+	h.b.setSessionStateFor("pi-1", &SessionState{CCSessionID: "cc-remembered", Cwd: "/w", Model: "m", PromptDigest: "p", Recording: emptyRecording()})
 	_, err, s := runAsk(t, h, replies("ok"), AskRequest{
 		Prompt: "next", PiSessionID: "pi-1", Context: msgs(map[string]any{"role": "user", "content": "earlier"}),
 	})
@@ -75,7 +75,7 @@ func TestPromptAndWaitContinuesTheRememberedSession(t *testing.T) {
 
 func TestPromptAndWaitWithoutContextDoesNotResume(t *testing.T) {
 	h := newProviderHarness(t, nil)
-	h.b.setSessionStateFor("pi-1", &legacyState{SessionID: "cc-remembered", PiSessionID: "pi-1"})
+	h.b.setSessionStateFor("pi-1", &SessionState{CCSessionID: "cc-remembered", Cwd: "/w", Model: "m", PromptDigest: "p", Recording: emptyRecording()})
 	_, err, s := runAsk(t, h, replies("ok"), AskRequest{Prompt: "next", PiSessionID: "pi-1"})
 	if err != nil || s.opts.Resume != "" {
 		t.Fatalf("resume = %q, err = %v", s.opts.Resume, err)

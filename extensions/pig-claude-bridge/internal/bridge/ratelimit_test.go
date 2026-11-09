@@ -375,7 +375,7 @@ func TestFooterShowsThePlanAndFastModeBeforeTheUsage(t *testing.T) {
 	}
 
 	b.plan = "max"
-	b.OnSessionStart(h, "startup")
+	b.OnSessionStart(h, "startup", "")
 	if got := h.statuses[UsageStatusKey]; got != "Claude Max" {
 		t.Fatalf("at session start: status = %q", got)
 	}

@@ -33,8 +33,12 @@ type fakeClient struct {
 	interrupts int
 	closes     int
 	endInputs  int
-	// onWrite, when set, runs for every WriteUser and decides its result.
-	onWrite func(ccproto.UserMessage) error
+	// onWrite, when set, runs for every WriteUser and decides its result; onWritten
+	// observes every write, whatever onWrite decides.
+	onWrite   func(ccproto.UserMessage) error
+	onWritten func(ccproto.UserMessage)
+	// onEmit observes every frame emitted as a map, before it is queued.
+	onEmit func(map[string]any)
 	// onInterrupt and onClose, when set, run first in Interrupt and Close; onWait
 	// runs in Wait once the process has exited.
 	onInterrupt, onClose, onWait func()
@@ -93,6 +97,9 @@ func (f *fakeClient) run() {
 
 // emit queues frames (maps or JSON strings) for delivery in order.
 func (f *fakeClient) emit(frames ...any) {
+	f.mu.Lock()
+	observe := f.onEmit
+	f.mu.Unlock()
 	for _, fr := range frames {
 		var raw []byte
 		switch v := fr.(type) {
@@ -100,6 +107,9 @@ func (f *fakeClient) emit(frames ...any) {
 			raw = []byte(v)
 		default:
 			raw, _ = json.Marshal(v)
+			if m, ok := v.(map[string]any); ok && observe != nil {
+				observe(m)
+			}
 		}
 		f.script <- scriptItem{frame: raw}
 	}
@@ -115,9 +125,12 @@ func (f *fakeClient) Done() <-chan struct{}          { return f.done }
 
 func (f *fakeClient) WriteUser(msg ccproto.UserMessage) error {
 	f.mu.Lock()
-	hook := f.onWrite
+	hook, observe := f.onWrite, f.onWritten
 	f.written = append(f.written, msg)
 	f.mu.Unlock()
+	if observe != nil {
+		observe(msg)
+	}
 	if hook != nil {
 		return hook(msg)
 	}

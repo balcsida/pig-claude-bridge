@@ -66,6 +66,12 @@ type Options struct {
 	// model through ExtraArgs instead (two tokens, as the TypeScript's extraArgs.model); only
 	// the isolated query sets Model.
 	Model, Effort, Resume string
+	// ForkSession and ResumeSessionAt fork Resume at a record uuid into a new session
+	// (the SDK's forkSession and resumeSessionAt); SessionID names a fresh launch's or a
+	// fork's target session (the SDK's sessionId; CC rejects it beside a plain resume).
+	ForkSession     bool
+	ResumeSessionAt string
+	SessionID       string
 	// ThinkingDisabled is the SDK's thinking:{type:"disabled"} (--thinking=disabled): PiG sends no
 	// reasoning level when thinking is off, and Claude Code would otherwise apply its own default.
 	ThinkingDisabled                      bool
@@ -118,6 +124,15 @@ func BuildArgs(o Options) []string {
 	}
 	if o.Resume != "" {
 		args = append(args, "--resume="+o.Resume)
+	}
+	if o.ForkSession {
+		args = append(args, "--fork-session")
+	}
+	if o.ResumeSessionAt != "" {
+		args = append(args, "--resume-session-at="+o.ResumeSessionAt)
+	}
+	if o.SessionID != "" {
+		args = append(args, "--session-id="+o.SessionID)
 	}
 	if len(o.AllowedTools) > 0 {
 		args = append(args, "--allowedTools="+strings.Join(o.AllowedTools, ","))
