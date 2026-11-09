@@ -6,8 +6,8 @@ This extension is a Go port of [pi-claude-bridge](https://github.com/elidickinso
 
 | what | pin |
 |---|---|
-| pi-claude-bridge | `6aa276a1498e5376363f5c1f8cf04bfcaee38c93`, plus these later commits ported on their own: f502f5d (silent-turn reminder, MCP description limit), 2edde93 (interrupted-turn resume), 5c4a268 (default output style), e93d51d (parent-session env markers), 0b096a8 (thinking off). The 0.10.0 session-sync rework (#222) and the AskClaude split (0.11.0) are not ported |
-| cc-session-io | 0.4.0 (MIT), the subset the bridge imports |
+| pi-claude-bridge | `acbe45b` (0.11.0). The AskClaude package split and `src/cache-trace.ts` are not ported (docs/compatibility.md D8, D9); `src/index.ts` line ranges below are those of 6aa276a, where the code moved they name the 0.11.0 function instead |
+| cc-session-io | 0.4.1 (MIT), the subset the bridge imports |
 | `@anthropic-ai/claude-agent-sdk` | 0.3.310 (Claude Code 2.1.310). The protocol client was written from the SDK's public type definitions and live probes ([protocol reference](docs/reference/agent-sdk-protocol-0.3.310.md)); the SDK itself is not vendored or depended on |
 | Claude Code | 2.1.310 (`ccproto.MinVersion`) |
 | PiG SDK | `github.com/MichaelKinsy/PiG/extensions/sdk` v0.7.0 (PiG 0.7.0); the [signatures](docs/reference/pig-sdk-signatures-v0.5.3.md) recorded at v0.5.3 still match every symbol the bridge uses |
@@ -26,7 +26,10 @@ Paths are relative to `extensions/pig-claude-bridge/`. TypeScript paths are `src
 | `internal/askclaude/tool.go` | `index.ts` 2662-2780 and the AskClaude call handler near 1750 | tool definition, remembered/isolated sessions, notices |
 | `internal/askclaude/ui.go` | `askclaude-ui.ts` | action summary and tool-name mapping, rendered as lines (D6) |
 | `internal/bridge/askclaude.go` | `index.ts` `promptAndWait` (2263) | AskClaude query path |
-| `internal/bridge/consume.go` | `index.ts` 1028-1100, 1486-1790 (`consumeQuery`, steering, tool-result delivery, abort, discard) | goroutines and channels instead of the event loop (D3) |
+| `internal/bridge/consume.go` | `index.ts` 1028-1100, 1486-1790 (`consumeQuery`, steering, tool-result delivery, abort, discard; 0.11.0 `discardRewrittenQuery`, `dropParkedQuery`, `deliverToolResults`) | goroutines and channels instead of the event loop (D3) |
+| `internal/bridge/recording.go` | `session-sync.ts` (`Recording`, `compareHistory`, `importHistory`, `LiveRecording`), `session-transcript.ts` (`resolveRecordingCut`, `recordedToolResults`) | mutex-guarded |
+| `internal/bridge/recordtap.go` | 0.11.0 `index.ts` `tapRecording`, `incorporate`, `recordAssistantEmission`, `completeAssistantRecording` | |
+| `internal/bridge/sessionstore.go` | `session-store.ts` | `""` stands for a null uuid in memory; the file keeps JSON null |
 | `internal/bridge/debug.go` | `index.ts` 36-150 (`debug`, `makeCliDebugOptions`, `diagDump`) | |
 | `internal/bridge/hooks.go` | `index.ts` 2463-2660 (event handlers) | `session_start`, `before_agent_start`, `agent_start`, `turn_start`, compaction/tree, shutdown |
 | `internal/bridge/host.go` | new (Go-only) | `Host` interface and `Deps`, so the PiG SDK stays confined to `extension.go` and the bridge is testable with a fake host |
@@ -37,12 +40,14 @@ Paths are relative to `extensions/pig-claude-bridge/`. TypeScript paths are `src
 | `internal/bridge/query.go` | `query-state.ts`, `prompt-stream.ts`, `index.ts` 480-494 (`newAssistantOutput`) | |
 | `internal/bridge/ratelimit.go` | `rate-limit.ts`, `index.ts` 510-550 | headers go to the debug log only (D1) |
 | `internal/bridge/sessioncwd.go` | `session-cwd.ts` | most-recent-pending summary slot (D7) |
-| `internal/bridge/state.go` | `index.ts` 187-340 (`SessionState`, `sessionKey`, `markRebuildForSession`, `armStaleContexts`) | `sponsorMarkRebuildForSession` not ported (D4) |
+| `internal/bridge/state.go` | 0.11.0 `index.ts` "Session persistence" (`sessionStateFor`, `inheritSessionState`, `setSessionStateFor`, `markRebuildForSession`, `armStaleContexts`, `waitForSessionWriter`) | `sponsorMarkRebuildForSession` not ported (D4) |
 | `internal/bridge/stream.go` | `index.ts` 1101-1216, 1215-1485 (`processStreamEvent`, `processAssistantMessage`, finalisation) | |
-| `internal/bridge/sync.go` | `index.ts` 341-420, 600-720 (`syncSharedSession`, `turnStart`, `convertAndImportMessages`, `verifyWrittenSession`, `safeRealpath`), 219-237 (`readCarriedAttachments`) | |
+| `internal/bridge/sync.go` | 0.11.0 `index.ts` `syncSharedSession`, `turnStart`, `verifyWrittenSession`, `safeRealpath`, `debugSessionPaths` | `importForAskClaude` is the port's (D8) |
 | `internal/bridge/toolargs.go` | `index.ts` 914-1018 (`piToolNameFor`, `mapToolArgs`) | |
 | `internal/bridge/usage.go` | `usage.ts`, `index.ts` `recordUsage` | |
-| `internal/ccproto/args.go` | `index.ts` 53-57 (`CC_CHILD_ENV`), 2030-2096 (query options); the SDK's argv builder (`sdk.mjs`) | argv pinned by `testdata/sdk-argv-snapshot.json` |
+| `internal/ccproto/args.go` | `cc-child.ts` (`CC_CHILD_ENV`, `PARENT_SESSION_VARS`, `SESSION_STORAGE_VARS`, `ccChildEnv`), `index.ts` query options; the SDK's argv builder (`sdk.mjs`) | argv pinned by `testdata/sdk-argv-snapshot.json`; `CLAUDE_CODE_DISABLE_FEATURE_FLAGS` is the port's |
+| `internal/ccsession/transcript.go` | `session-transcript.ts` (`readTranscript`, `findBoundary`, `resolveCut`, `savePrefixSession`, the tool-result index of `recordedToolResults`) | |
+| `internal/digest/digest.go` | `message-digests.ts` | pinned by `tests/fixtures/message-digests.json` (`scripts/dev/gen-digests.mjs`) |
 | `internal/ccproto/control.go` | the SDK's control protocol (`sdk.mjs`), reference sections 2 to 4 | requests, responses, inbound `mcp_message`, interrupt |
 | `internal/ccproto/exec.go` | `index.ts` executable options; the SDK's executable handling | `claude` from `PATH` and version check (D2) |
 | `internal/ccproto/messages.go` | the SDK's `SDKUserMessage` type, reference section 4 | |

@@ -83,7 +83,7 @@ func TestHistoryPromptSplit(t *testing.T) {
 			blockMsg(textBlock("describe this"), imageBlock("aW1hZ2U=")),
 			map[string]any{"role": "user", "content": "(attachment preview: [#image 1])", "timestamp": 4},
 		)
-		res, err := b.syncSharedSession(nil, "", messages, nil, cwd, "claude-haiku-4-5")
+		res, err := b.syncSharedSession(nil, "", messages, nil, cwd, "claude-haiku-4-5", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -503,19 +503,19 @@ func TestEventHooks(t *testing.T) {
 	t.Run("session_start remembers the session's cwd", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		host := &fakeHost{sessionID: "s1", cwd: "/agents/Martin"}
-		b.OnSessionStart(host, "startup")
+		b.OnSessionStart(host, "startup", "")
 		if got := b.sessionCwdFor("s1"); got != "/agents/Martin" {
 			t.Fatalf("cwd = %q", got)
 		}
 	})
-	t.Run("a new, resumed or forked session drops every mirror; a startup does not", func(t *testing.T) {
-		for reason, dropped := range map[string]bool{"new": true, "resume": true, "fork": true, "startup": false, "reload": false} {
+	t.Run("switching pi sessions retains every other session's mirror and rewrite mark", func(t *testing.T) {
+		for _, reason := range []string{"new", "resume", "fork", "startup", "reload"} {
 			b, _, _ := newTestBridge(t, false)
-			b.setSessionStateFor("pi-a", &SessionState{SessionID: "cc-a"})
+			b.setSessionStateFor("pi-a", testState("cc-a"))
 			b.markRebuildForSession("pi-a", "test")
-			b.OnSessionStart(&fakeHost{sessionID: "pi-b"}, reason)
-			if gone := b.sessionStateFor("pi-a") == nil && !b.historyRewrittenFor("pi-a"); gone != dropped {
-				t.Fatalf("%s: dropped = %t, want %t", reason, gone, dropped)
+			b.OnSessionStart(&fakeHost{sessionID: "pi-b"}, reason, "")
+			if b.sessionStateFor("pi-a") == nil || !b.historyRewrittenFor("pi-a") {
+				t.Fatalf("%s: another session's state was dropped", reason)
 			}
 		}
 	})
@@ -525,11 +525,11 @@ func TestEventHooks(t *testing.T) {
 			(*Bridge).OnSessionTree,
 		} {
 			b, _, _ := newTestBridge(t, false)
-			b.setSessionStateFor("pi-a", &SessionState{SessionID: "cc-a"})
-			b.setSessionStateFor("pi-b", &SessionState{SessionID: "cc-b"})
+			b.setSessionStateFor("pi-a", testState("cc-a"))
+			b.setSessionStateFor("pi-b", testState("cc-b"))
 			b.rememberSummarySession("pi-a")
 			fire(b, &fakeHost{sessionID: "pi-a"})
-			if !b.sessionStateFor("pi-a").NeedsRebuild || b.sessionStateFor("pi-b").NeedsRebuild || !b.historyRewrittenFor("pi-a") {
+			if !b.sessionStateFor("pi-a").DirtyTail || b.sessionStateFor("pi-b").DirtyTail || !b.historyRewrittenFor("pi-a") {
 				t.Fatal("only the compacting session is marked")
 			}
 			if _, pending := b.summarySessionFor(); pending {
@@ -539,9 +539,9 @@ func TestEventHooks(t *testing.T) {
 	})
 	t.Run("session_compact logs the reason and retry state in its tag", func(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
-		b.setSessionStateFor("pi-a", &SessionState{SessionID: "cc-a-12345678"})
+		b.setSessionStateFor("pi-a", testState("cc-a-12345678"))
 		b.OnSessionCompact(&fakeHost{sessionID: "pi-a"}, "session_compact:threshold:willRetry=false")
-		if log := readDebugLog(t, agentDir); !strings.Contains(log, "session_compact:threshold:willRetry=false: marking needsRebuild on session cc-a-123") {
+		if log := readDebugLog(t, agentDir); !strings.Contains(log, "session_compact:threshold:willRetry=false: marking dirtyTail on session cc-a-123") {
 			t.Fatalf("log:\n%s", log)
 		}
 	})
@@ -553,11 +553,11 @@ func TestEventHooks(t *testing.T) {
 			t.Fatal("the parked query must be armed")
 		}
 	})
-	t.Run("session_shutdown forgets the cwd and sync lock, clears mirrors and names a leak", func(t *testing.T) {
+	t.Run("session_shutdown forgets the cwd and sync lock, keeps the mirror and names a leak", func(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
 		host := &fakeHost{sessionID: "s9", cwd: "/x"}
-		b.OnSessionStart(host, "startup")
-		b.setSessionStateFor("s9", &SessionState{SessionID: "cc"})
+		b.OnSessionStart(host, "startup", "")
+		b.setSessionStateFor("s9", testState("cc"))
 		b.lockSync("s9")()
 		b.addContext("s9")
 		b.OnSessionShutdown(host)
@@ -567,24 +567,25 @@ func TestEventHooks(t *testing.T) {
 		b.mu.Lock()
 		_, lock := b.syncLocks["s9"]
 		b.mu.Unlock()
-		if lock || b.sessionStateFor("s9") != nil {
-			t.Fatal("lock entry and mirror must be gone")
+		if lock || b.sessionStateFor("s9") == nil {
+			t.Fatal("the lock entry must be gone and the mirror kept")
 		}
-		if log := readDebugLog(t, agentDir); !strings.Contains(log, "WARNING: session_shutdown left state behind — contexts=1 pendingToolCalls=0 promptStreams=0") {
+		if log := readDebugLog(t, agentDir); !strings.Contains(log, "WARNING: session_shutdown left a context with no query — pendingToolCalls=0 promptStream=false") {
 			t.Fatalf("log:\n%s", log)
 		}
 	})
 	t.Run("a clean shutdown reports no leak", func(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
 		b.OnSessionShutdown(&fakeHost{sessionID: "clean"})
-		if log := readDebugLog(t, agentDir); strings.Contains(log, "left state behind") {
+		log, _ := os.ReadFile(filepath.Join(agentDir, "claude-bridge.log")) // absent when nothing was logged
+		if strings.Contains(string(log), "left state behind") {
 			t.Fatalf("log:\n%s", log)
 		}
 	})
 	t.Run("a panicking host never escapes an entry point", func(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
 		host := explodingHost{}
-		b.OnSessionStart(host, "new")
+		b.OnSessionStart(host, "new", "")
 		b.OnBeforeAgentStart(host, "p", nil)
 		b.OnAgentStart(host)
 		b.OnTurnStart(host)
@@ -626,7 +627,8 @@ func TestSessionShutdownKillsLiveClaudeCodeChildren(t *testing.T) {
 	h.liveFor("pi-shutdown")
 	h.b.OnSessionShutdown(h.host)
 	gone(t, p)
-	if reply := finalOf(t, stream); reply["stopReason"] != "aborted" {
+	// The session's own query is closed first (its progress kept), which ends its turn.
+	if reply := finalOf(t, stream); reply["stopReason"] != "error" || reply["errorMessage"] != "Conversation replaced" {
 		t.Fatalf("reply = %v", reply)
 	}
 }

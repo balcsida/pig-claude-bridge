@@ -37,6 +37,11 @@ the rebuild, attachment and parallel-result live tests that `tests/live` also ru
   `TestOutputStyleDefaultOverridesAUserLevelOutputStyle`. `TestGetUsageAnswersWithKeyedWindows` was tightened
   on the way: `get_usage` reports a window the account has not opened as `null` (`five_hour` that day), which
   the test now accepts. The CLI's MCP `clientInfo.version` is `2.1.319`.
+- Re-run on 2026-11-09 after the catch-up with pi-claude-bridge 0.11.0: all 26 contract tests passed, the 24 above
+  plus `TestEmptyToolResultsAreSubstitutedLive` (CC records "Command failed with no output" for an errored empty
+  result and "(<tool> completed with no output)" otherwise, the placeholders the import writes) and
+  `TestForkSessionAndSessionIDFlags` (`--fork-session --resume-session-at <uuid> --session-id <new>` runs as the new
+  session, carries the forked-at record and the source conversation; `--session-id` alone names a fresh launch).
 - Not covered (as in TypeScript): `DISABLE_AUTO_COMPACT`, steer draining at tool boundaries, `rate_limit_event`
   shape; `updatedInput` on allow cannot be expressed through the client (it answers `can_use_tool` with the
   "not provided" error).

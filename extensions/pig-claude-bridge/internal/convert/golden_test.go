@@ -104,7 +104,7 @@ func canonical(t *testing.T, line string) string {
 // exactly, except inside tool inputs, whose values are compared after
 // canonicalisation, because PiG delivers decoded maps that carry no key order.
 func TestGoldenPiHistory310(t *testing.T) {
-	anthropic, _, _, err := ConvertPiMessages(loadFixture(t), nil)
+	anthropic, _, _, err := ConvertPiMessages(loadFixture(t), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

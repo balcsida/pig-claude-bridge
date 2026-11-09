@@ -105,6 +105,26 @@ func TestBuildEnvDropsParentClaudeCodeSessionMarkers(t *testing.T) {
 	}
 }
 
+// pi's provider env applies over the parent's; an empty value unsets the variable (cc-child.ts ccChildEnv),
+// and the bridge's own guards still come last.
+func TestBuildEnvAppliesProviderEnvOverridesAndEmptyUnsets(t *testing.T) {
+	env := BuildEnv([]string{"ANTHROPIC_BASE_URL=https://gateway", "KEEP=1", "DISABLE_AUTO_COMPACT=0"},
+		Options{Env: []string{"ANTHROPIC_BASE_URL=", "ANTHROPIC_API_KEY=k", "DISABLE_AUTO_COMPACT=0"}})
+	for _, gone := range []string{"ANTHROPIC_BASE_URL=https://gateway"} {
+		if slices.Contains(env, gone) {
+			t.Errorf("%s survived an empty override: %q", gone, env)
+		}
+	}
+	for _, kept := range []string{"KEEP=1", "ANTHROPIC_API_KEY=k"} {
+		if !slices.Contains(env, kept) {
+			t.Errorf("missing %s in %q", kept, env)
+		}
+	}
+	if slices.Index(env, "DISABLE_AUTO_COMPACT=1") < slices.Index(env, "DISABLE_AUTO_COMPACT=0") {
+		t.Errorf("the bridge's guard must win over a provider env override: %q", env)
+	}
+}
+
 // thinking:{type:"disabled"} is --thinking=disabled, right after the fixed prefix and before --effort (sdk.mjs initialize()).
 func TestBuildArgsThinkingDisabled(t *testing.T) {
 	got := BuildArgs(Options{ThinkingDisabled: true, Effort: "low"})

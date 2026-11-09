@@ -47,7 +47,8 @@ func newTestBridge(t *testing.T, debug bool) (b *Bridge, claudeDir, agentDir str
 func (b *Bridge) resetSharedSession() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.sessions = map[string]SessionState{}
+	b.sessions = map[string]*SessionState{}
+	b.loaded = map[string]bool{}
 	b.historyRewritten = map[string]struct{}{}
 }
 
@@ -66,17 +67,15 @@ func (b *Bridge) addContext(piSessionID string) *QueryContext {
 	return c
 }
 
-// isAbandoned reports whether discardRewrittenQuery killed c's query.
-func (c *QueryContext) isAbandoned() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.abandoned
-}
-
 func (b *Bridge) isStale(c *QueryContext) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return c.historyStale
+}
+
+// testState is a mirror with the required fields filled, for tests that only need its identity.
+func testState(ccSessionID string) *SessionState {
+	return &SessionState{CCSessionID: ccSessionID, Cwd: "/w", Model: "m", PromptDigest: "p", Recording: emptyRecording()}
 }
 
 func readDebugLog(t *testing.T, agentDir string) string {

@@ -100,8 +100,10 @@ type toolCall struct {
 // internal/mcptools: these tests pin the CLI, not our server.
 type bareServer struct {
 	tools []mcpTool
-	mu    sync.Mutex
-	calls []toolCall
+	// respond, when set, decides a tool's result; nil means "<name>-VALUE".
+	respond func(name string) (content []any, isError bool)
+	mu      sync.Mutex
+	calls   []toolCall
 	// methods lists every JSON-RPC method the CLI sent, in order; initParams is the params of its initialize.
 	methods    []string
 	initParams map[string]any
@@ -141,7 +143,15 @@ func (s *bareServer) handle(_ context.Context, _ string, message json.RawMessage
 		s.mu.Lock()
 		s.calls = append(s.calls, toolCall{params.Name, params.Meta, params.Args})
 		s.mu.Unlock()
-		result = map[string]any{"content": []any{map[string]any{"type": "text", "text": params.Name + "-VALUE"}}}
+		reply := map[string]any{"content": []any{map[string]any{"type": "text", "text": params.Name + "-VALUE"}}}
+		if s.respond != nil {
+			content, isError := s.respond(params.Name)
+			reply = map[string]any{"content": content}
+			if isError {
+				reply["isError"] = true
+			}
+		}
+		result = reply
 	case "ping":
 		result = map[string]any{}
 	default:
@@ -1292,6 +1302,94 @@ func TestOutputStyleDefaultOverridesAUserLevelOutputStyle(t *testing.T) {
 				t.Fatal("CC did not load the user-level output style; this test's control is obsolete")
 			}
 		}
+	}
+}
+
+// Claude Code never sends an empty tool result: live it substitutes "Command failed with no
+// output" for an errored one and "(<tool> completed with no output)" otherwise (pi-claude-bridge
+// #227); the bridge writes the same placeholders when it imports pi's history. Pinned from the
+// session file, which records the tool_result blocks as CC sent them.
+func TestEmptyToolResultsAreSubstitutedLive(t *testing.T) {
+	srv := &bareServer{tools: []mcpTool{noArgTool("spaces"), noArgTool("fails")}}
+	srv.respond = func(name string) ([]any, bool) {
+		return []any{map[string]any{"type": "text", "text": "   "}}, name == "fails"
+	}
+	o := providerOptions(t)
+	obs := run(t, startLive(t, o, srv), "Call the spaces tool and the fails tool, both once, then say done.")
+	if len(srv.callList()) == 0 {
+		t.Skip("model declined to call the tools; nothing to pin")
+	}
+	records, err := ccsession.ReadTranscript(str(obs.result["session_id"]), o.Cwd, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := ccsession.ToolResultBlocks(records)
+	got := map[string]string{}
+	for _, tu := range obs.toolUses {
+		var block struct {
+			Content any  `json:"content"`
+			IsError bool `json:"is_error"`
+		}
+		_ = json.Unmarshal(blocks[tu.ID], &block)
+		got[tu.Name] = fmt.Sprintf("%v|%t", block.Content, block.IsError)
+	}
+	for name, want := range map[string]*regexp.Regexp{
+		"mcp__custom-tools__fails":  regexp.MustCompile(`^Command failed with no output(\n.*)?\|true$`),
+		"mcp__custom-tools__spaces": regexp.MustCompile(`^\(mcp__custom-tools__spaces completed with no output\)(\n.*)?\|false$`),
+	} {
+		if v, ok := got[name]; !ok {
+			t.Logf("%s was not called", name)
+		} else if !want.MatchString(v) {
+			t.Errorf("%s recorded %q", name, v)
+		}
+	}
+}
+
+// --fork-session --resume-session-at <uuid> --session-id <new> forks a session at a record into a new
+// file, and --session-id alone names a fresh launch (the sync's fork and clean-start paths).
+func TestForkSessionAndSessionIDFlags(t *testing.T) {
+	o := providerOptions(t)
+	o.MaxTurns = 1
+	first := run(t, startLive(t, o, nil), "Reply with the single word APPLE.")
+	if first.result == nil || first.result["subtype"] != "success" {
+		t.Fatalf("result = %v", first.result)
+	}
+	source := str(first.result["session_id"])
+	records, err := ccsession.ReadTranscript(source, o.Cwd, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forkAt := ""
+	for _, r := range records {
+		if r.Type == "assistant" {
+			forkAt = r.UUID
+		}
+	}
+	if forkAt == "" {
+		t.Fatal("no assistant record to fork at")
+	}
+
+	fork := providerOptionsIn(t, o.Cwd)
+	fork.MaxTurns, fork.Resume, fork.ForkSession, fork.ResumeSessionAt, fork.SessionID = 1, source, true, forkAt, newUUID(t)
+	forked := run(t, startLive(t, fork, nil), "What word did you reply with? Answer with that word only.")
+	if got := str(at(forked.init, "session_id")); got != fork.SessionID {
+		t.Fatalf("the fork runs as %s, want its target %s", got, fork.SessionID)
+	}
+	forkedRecords, err := ccsession.ReadTranscript(fork.SessionID, o.Cwd, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ccsession.FindBoundary(forkedRecords, forkAt) < 0 {
+		t.Fatal("the forked file does not carry the source record it was forked at")
+	}
+	if !strings.Contains(strings.ToUpper(assistantText(forked)), "APPLE") {
+		t.Errorf("the fork lost the source conversation: %q", assistantText(forked))
+	}
+
+	fresh := providerOptionsIn(t, o.Cwd)
+	fresh.MaxTurns, fresh.SessionID = 1, newUUID(t)
+	if got := str(initOnly(t, startLive(t, fresh, nil))["session_id"]); got != fresh.SessionID {
+		t.Fatalf("a fresh launch runs as %s, want --session-id %s", got, fresh.SessionID)
 	}
 }
 

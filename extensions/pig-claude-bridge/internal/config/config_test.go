@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-const configDirName = ".pi"
-
 var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 func write(t *testing.T, path, body string) {
@@ -54,35 +52,8 @@ func TestClaudeCodeSettings(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
-	t.Run("loads project config from Pi's configured project directory", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
-		write(t, ProjectConfigPath(cwd, configDirName), `{"provider":{"plan":"max"},"askClaude":{"enabled":false}}`)
-
-		want := Config{
-			Provider:  &ProviderConfig{Plan: ptr("max")},
-			AskClaude: &AskClaudeConfig{Enabled: ptr(false)},
-		}
-		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
-			t.Fatalf("got %+v, want %+v", got, want)
-		}
-	})
-
-	t.Run("merges project config over global config", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
-		write(t, GlobalConfigPath(agentDir), `{"provider":{"plan":"pro","strictMcpConfig":true},"askClaude":{"enabled":true,"defaultMode":"read"}}`)
-		write(t, ProjectConfigPath(cwd, configDirName), `{"provider":{"plan":"max","autoMemoryEnabled":true},"askClaude":{"enabled":false}}`)
-
-		want := Config{
-			Provider:  &ProviderConfig{Plan: ptr("max"), StrictMcpConfig: ptr(true), AutoMemoryEnabled: ptr(true)},
-			AskClaude: &AskClaudeConfig{Enabled: ptr(false), DefaultMode: ptr("read")},
-		}
-		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
-			t.Fatalf("got %+v, want %+v", got, want)
-		}
-	})
-
 	t.Run("markStartupNoticeShown records today's date without dropping existing settings", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
+		agentDir := t.TempDir()
 		path := GlobalConfigPath(agentDir)
 		write(t, path, `{"askClaude":{"enabled":false},"provider":{"strictMcpConfig":false}}`)
 
@@ -93,7 +64,7 @@ func TestLoad(t *testing.T) {
 		if got := read(t, path); got != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
-		cfg := Load(agentDir, cwd, configDirName)
+		cfg := Load(agentDir)
 		if cfg.StartupNoticeShown != "2026-10-25" || !datePattern.MatchString(cfg.StartupNoticeShown) {
 			t.Fatalf("startupNoticeShown = %q", cfg.StartupNoticeShown)
 		}
@@ -132,84 +103,65 @@ func TestLoad(t *testing.T) {
 	})
 
 	t.Run("markStartupNoticeShown creates the config when there is none", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
+		agentDir := t.TempDir()
 		agentDir = filepath.Join(agentDir, "nested", "agent")
-		if got := Load(agentDir, cwd, configDirName).StartupNoticeShown; got != "" {
+		if got := Load(agentDir).StartupNoticeShown; got != "" {
 			t.Fatalf("got %q before marking", got)
 		}
 		if err := MarkStartupNoticeShown(agentDir, "2026-10-25"); err != nil {
 			t.Fatal(err)
 		}
-		if got := Load(agentDir, cwd, configDirName).StartupNoticeShown; got != "2026-10-25" {
+		if got := Load(agentDir).StartupNoticeShown; got != "2026-10-25" {
 			t.Fatalf("got %q after marking", got)
 		}
 	})
 
 	t.Run("resolves global config via the agent dir, not hardcoded ~/.pi/agent", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
+		agentDir := t.TempDir()
 		write(t, filepath.Join(agentDir, "claude-bridge.json"), `{"provider":{"plan":"max"}}`)
 
 		want := Config{Provider: &ProviderConfig{Plan: ptr("max")}, AskClaude: &AskClaudeConfig{}}
-		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
+		if got := Load(agentDir); !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
 
 	t.Run("invalid JSON counts as empty", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
+		agentDir := t.TempDir()
 		write(t, GlobalConfigPath(agentDir), `{ "provider": { "plan": "pro" }, }`)
-		write(t, ProjectConfigPath(cwd, configDirName), `{"askClaude":{"enabled":false}}`)
 
-		got := Load(agentDir, cwd, configDirName)
+		got := Load(agentDir)
 		if len(got.Problems) != 1 || !strings.HasPrefix(got.Problems[0], "claude-bridge: failed to parse "+GlobalConfigPath(agentDir)+": ") {
 			t.Fatalf("problems = %q", got.Problems)
 		}
 		got.Problems = nil
-		want := Config{Provider: &ProviderConfig{}, AskClaude: &AskClaudeConfig{Enabled: ptr(false)}}
+		want := Config{Provider: &ProviderConfig{}, AskClaude: &AskClaudeConfig{}}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
 
-	t.Run("an invalid project file keeps the global settings", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
-		write(t, GlobalConfigPath(agentDir), `{"provider":{"plan":"max"},"askClaude":{"enabled":true}}`)
-		write(t, ProjectConfigPath(cwd, configDirName), `{"provider":{"plan":"pro"},`)
-
-		got := Load(agentDir, cwd, configDirName)
-		if len(got.Problems) != 1 || !strings.HasPrefix(got.Problems[0], "claude-bridge: failed to parse "+ProjectConfigPath(cwd, configDirName)+": ") {
-			t.Fatalf("problems = %q", got.Problems)
-		}
-		got.Problems = nil
-		want := Config{Provider: &ProviderConfig{Plan: ptr("max")}, AskClaude: &AskClaudeConfig{Enabled: ptr(true)}}
-		if !reflect.DeepEqual(got, want) {
+	t.Run("a project .pi/claude-bridge.json is not read (pi-claude-bridge #198)", func(t *testing.T) {
+		agentDir := t.TempDir()
+		write(t, filepath.Join(agentDir, "..", ".pi", "claude-bridge.json"), `{"provider":{"plan":"max"}}`)
+		want := Config{Provider: &ProviderConfig{}, AskClaude: &AskClaudeConfig{}}
+		if got := Load(agentDir); !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
 
 	t.Run("missing files are not problems", func(t *testing.T) {
-		if got := Load(t.TempDir(), t.TempDir(), configDirName).Problems; got != nil {
+		if got := Load(t.TempDir()).Problems; got != nil {
 			t.Fatalf("problems = %q", got)
 		}
 	})
 
-	t.Run("a null section in the project file keeps the global section", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
-		write(t, GlobalConfigPath(agentDir), `{"provider":{"plan":"max"},"askClaude":{"enabled":true}}`)
-		write(t, ProjectConfigPath(cwd, configDirName), `{"provider":null,"askClaude":null}`)
-
-		want := Config{Provider: &ProviderConfig{Plan: ptr("max")}, AskClaude: &AskClaudeConfig{Enabled: ptr(true)}}
-		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
-			t.Fatalf("got %+v, want %+v", got, want)
-		}
-	})
-
 	t.Run("keys match exactly, not case-insensitively", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
+		agentDir := t.TempDir()
 		write(t, GlobalConfigPath(agentDir), `{"Provider":{"plan":"max"},"provider":{"Plan":"max","strictMcpConfig":true},"askClaude":{"ENABLED":true},"StartupNoticeShown":"2026-10-25"}`)
 
 		want := Config{Provider: &ProviderConfig{StrictMcpConfig: ptr(true)}, AskClaude: &AskClaudeConfig{}}
-		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
+		if got := Load(agentDir); !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
@@ -229,11 +181,11 @@ func TestLoad(t *testing.T) {
 	})
 
 	t.Run("a mistyped value keeps the file's other keys", func(t *testing.T) {
-		agentDir, cwd := t.TempDir(), t.TempDir()
+		agentDir := t.TempDir()
 		write(t, GlobalConfigPath(agentDir), `{"provider":{"plan":"max","forceTwoHundredK":"claude-x"},"askClaude":{"enabled":"false"}}`)
 
 		want := Config{Provider: &ProviderConfig{Plan: ptr("max")}, AskClaude: &AskClaudeConfig{}}
-		if got := Load(agentDir, cwd, configDirName); !reflect.DeepEqual(got, want) {
+		if got := Load(agentDir); !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
@@ -251,9 +203,9 @@ func TestLoadFailsClosedForMistypedModeGates(t *testing.T) {
 		{"a null defaultMode stays unset", `{"askClaude":{"defaultMode":null}}`, AskClaudeConfig{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			agentDir, cwd := t.TempDir(), t.TempDir()
+			agentDir := t.TempDir()
 			write(t, GlobalConfigPath(agentDir), c.body)
-			if got := Load(agentDir, cwd, configDirName).AskClaude; !reflect.DeepEqual(*got, c.want) {
+			if got := Load(agentDir).AskClaude; !reflect.DeepEqual(*got, c.want) {
 				t.Fatalf("got %+v, want %+v", *got, c.want)
 			}
 		})

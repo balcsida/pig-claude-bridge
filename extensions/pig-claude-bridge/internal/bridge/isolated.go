@@ -106,9 +106,13 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 	if tools == nil {
 		tools = []string{}
 	}
+	env, err := providerEnv(options)
+	if err != nil {
+		return fail(err.Error())
+	}
 	debugFile, onStderr := b.cliDebugOptions(tag)
 	opts := ccproto.Options{
-		Executable: exe, Cwd: cwd, Model: cliModel, Effort: effort, ThinkingDisabled: thinkingOff, MaxTurns: 1,
+		Executable: exe, Cwd: cwd, Env: env, Model: cliModel, Effort: effort, ThinkingDisabled: thinkingOff, MaxTurns: 1,
 		Tools: tools, ToolsSet: true, AllowedTools: allowedTools,
 		SettingSourcesSet: true, Skills: []string{},
 		SystemPrompt: str(piContext["systemPrompt"]), SystemPromptSet: true,

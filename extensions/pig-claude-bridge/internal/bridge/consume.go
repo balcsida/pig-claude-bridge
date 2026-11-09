@@ -67,13 +67,18 @@ func (b *Bridge) unregisterContext(q *QueryContext) {
 	delete(b.contexts, q)
 }
 
-// contextForToolResults finds the live query a turn's results belong to, by the
-// tool call ids it parked, queued or emitted. nil when none matches.
-func (b *Bridge) contextForToolResults(results []convert.McpResult) *QueryContext {
+// contextForToolResults finds the parked query of this pi session that a turn's
+// results answer, by the tool call ids it parked, queued or emitted. nil when none
+// matches. Tool-call ids repeat across sessions whenever one copies another's
+// history (a fork, a worker seeded from its host), so an id alone could deliver one
+// session's turn into another's Claude Code query (pi-claude-bridge #111).
+func (b *Bridge) contextForToolResults(results []convert.McpResult, piSessionID string) *QueryContext {
 	b.mu.Lock()
 	live := make([]*QueryContext, 0, len(b.contexts))
 	for c := range b.contexts {
-		live = append(live, c)
+		if c.piSessionID == piSessionID {
+			live = append(live, c)
+		}
 	}
 	b.mu.Unlock()
 	for _, r := range results {
@@ -195,6 +200,7 @@ func parseRateLimitInfo(m map[string]any) RateLimitInfo {
 		OverageStatus: str(m["overageStatus"]), OverageResetsAt: num(m["overageResetsAt"]),
 		Utilization: num(m["utilization"]), SurpassedThreshold: num(m["surpassedThreshold"]),
 	}
+	info.IsUsingOverage, _ = m["isUsingOverage"].(bool)
 	if windows := obj(m["unifiedWindows"]); windows != nil {
 		info.UnifiedWindows = map[string]*UsageWindow{}
 		for name, raw := range windows {
@@ -253,7 +259,14 @@ loop:
 			b.debugf("consumeQuery: skipping malformed frame: %v", err)
 			continue
 		}
+		if q.isAbandoned() {
+			break
+		}
+		b.tapRecording(q, frame)
 		b.reportHeldRateLimit(q)
+		if ctx.Err() != nil || q.isAbandoned() {
+			break
+		}
 		if b.consumeFrame(host, q, frame, &res) {
 			break
 		}
@@ -300,17 +313,10 @@ func (b *Bridge) consumeFrame(host Host, q *QueryContext, frame map[string]any, 
 	typ := str(frame["type"])
 
 	// Lifecycle frames come before the currentPiStream gate: everything below it is
-	// content, which has nowhere to go once a turn ended on a tool call.
-	//
-	// A replay acknowledgement clears a queued steer even after its turn's stream
-	// ended. For a fresh steer uuid, replay marks incorporation, not completion:
-	// its MCP calls still need stdin until the following result.
-	if parent, present := frame["parent_tool_use_id"]; typ == "user" && present && parent == nil && frame["isReplay"] == true {
-		q.mu.Lock()
-		delete(q.pendingSteerUUIDs, str(frame["uuid"]))
-		q.mu.Unlock()
-	}
-
+	// content, which has nowhere to go once a turn ended on a tool call. A replay
+	// acknowledgement (tapRecording) clears a queued steer even after its turn's
+	// stream ended; it marks incorporation, not completion: the steer's MCP calls
+	// still need stdin until the following result.
 	switch typ {
 	case "result":
 		// The failure a result carries is the only record the turn failed at all; it
@@ -373,7 +379,15 @@ func (b *Bridge) consumeFrame(host Host, q *QueryContext, frame map[string]any, 
 	case "stream_event":
 		b.processStreamEvent(q, frame)
 	case "assistant":
-		b.processAssistantMessage(q, frame)
+		// A completed echo can trail tool-result delivery. tapRecording recorded it for
+		// its original step; it is never rendered again into the new pi stream.
+		q.mu.Lock()
+		step := q.assistantSteps[str(obj(frame["message"])["id"])]
+		emitted := step != nil && step.emitted != nil
+		q.mu.Unlock()
+		if !emitted {
+			b.processAssistantMessage(q, frame)
+		}
 	case "result":
 		// The success path: push the result text when no stream event delivered it.
 		func() {
@@ -478,12 +492,10 @@ func (b *Bridge) turnField(q *QueryContext, key string) any {
 	return q.turnOutput[key]
 }
 
-// finishAborted ends an aborted query. The killed subprocess may flush a late
-// record into the session JSONL, so its mirror rebuilds on a fresh id. A turn whose
-// stream already ended was returned to pi and is left alone.
+// finishAborted ends an aborted query; its final snapshot was committed by the abort
+// itself. A turn whose stream already ended was returned to pi and is left alone.
 func (b *Bridge) finishAborted(q *QueryContext) {
-	b.markSessionNeedsRebuild(q.piSessionID, true)
-	b.debugf("provider: abort detected, marked session needsRebuild + forceRotate")
+	b.debugf("provider: abort detected")
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.heldRateLimit = nil
@@ -495,17 +507,16 @@ func (b *Bridge) finishAborted(q *QueryContext) {
 	q.endStreamLocked(map[string]any{"type": "error", "reason": "aborted", "error": deepCopy(q.turnOutput)})
 }
 
-// failQuery ends a failed query with exactly one error event on the open stream.
-// A turn whose stream already ended is left unchanged (issue #181).
+// failQuery ends a failed query with exactly one error event on the open stream,
+// after committing its progress dirty: the next turn compares content and keeps what
+// still matches. A turn whose stream already ended is left unchanged (issue #181).
 func (b *Bridge) failQuery(q *QueryContext, client ccproto.Client, failure error) {
 	b.debugf("provider: query error, error=%v", failure)
-	var reported *resultFailure
-	if errors.As(failure, &reported) {
-		// The conversation is in an unknown state: drop the mirror, like the SDK's
-		// throw after an error result did.
-		b.setSessionStateFor(q.piSessionID, nil)
-	} else {
-		b.markSessionNeedsRebuild(q.piSessionID, false)
+	q.mu.Lock()
+	commit := q.commitRecording
+	q.mu.Unlock()
+	if commit != nil {
+		commit(true)
 	}
 	q.mu.Lock()
 	ps := q.promptStream
@@ -638,16 +649,23 @@ func (b *Bridge) drainForAbort(q *QueryContext) {
 }
 
 // discardRewrittenQuery drops a Claude Code query parked at a tool boundary whose
-// conversation pi has since rewritten (/compact, tree navigation; issue #101).
-// Delivering the tool result into it would hand Claude Code the context pi just
-// shrank. The caller takes the fresh-query path, where REBUILD imports pi's
-// rewritten history, this tool result included. reason is what the parked handlers
-// are answered with.
+// conversation pi has since rewritten or replaced (/compact, tree navigation, a
+// history edit, a fresh prompt from the same session; issue #101). Its progress is
+// committed first, dirty, so the next sync keeps whatever still matches. Delivering
+// the tool result into it would hand Claude Code the context pi just shrank; the
+// caller takes the fresh-query path instead, where the sync imports pi's current
+// history, this tool result included. reason is what the parked handlers are answered with.
 func (b *Bridge) discardRewrittenQuery(q *QueryContext, reason string) {
+	q.mu.Lock()
+	commit := q.commitRecording
+	q.mu.Unlock()
+	if commit != nil {
+		commit(true)
+	}
 	q.mu.Lock()
 	discarded := q.activeQuery
 	q.activeQuery = nil
-	q.abandoned = q.abandoned || discarded != nil
+	q.abandoned = true
 	q.turnToolCallIDs = []string{}
 	ps := q.promptStream
 	q.promptStream = nil
@@ -668,21 +686,14 @@ func (b *Bridge) discardRewrittenQuery(q *QueryContext, reason string) {
 	// subprocess never settles.
 	q.releasePendingToolCalls(reason)
 	b.killClient(discarded)
-	// The CLI may still flush a record into the session JSONL and the rebuild is
-	// next, so rotate rather than race it. Only this session's mirror.
-	b.markSessionNeedsRebuild(q.piSessionID, true)
-	b.debugf("provider: history rewritten under a parked query — discarded it, rebuilding from current history")
-}
-
-// steerMissedSession records a steer that never made it into Claude Code's
-// session. The cursor has already counted it, so count-based sync would skip it
-// forever: rebuild instead, which re-imports the message from pi's context.
-func (b *Bridge) steerMissedSession(q *QueryContext, text string) {
 	q.mu.Lock()
-	q.missedSteer = true
+	if q.currentPiStream != nil && q.turnOutput != nil {
+		q.turnOutput["stopReason"] = "error"
+		q.turnOutput["errorMessage"] = "Conversation replaced"
+		q.endStreamLocked(map[string]any{"type": "error", "reason": "error", "error": deepCopy(q.turnOutput)})
+	}
 	q.mu.Unlock()
-	b.markSessionNeedsRebuild(q.piSessionID, false)
-	b.debugf("provider: steer never reached CC, marked query for rebuild: %s", truncateRunes(text, 60))
+	b.debugf("provider: discarded parked query; its recorded prefix remains available for a fork")
 }
 
 func newUUID() string {
@@ -705,9 +716,15 @@ func newUUID() string {
 // the FIFO ordering are Claude Code internals.
 //
 // Results pair with handlers by tool use id. host may be nil (no stuck-handler notice).
-func (b *Bridge) deliverToolResults(ctx context.Context, host Host, q *QueryContext, results []convert.McpResult, steer []any, contextLength int) {
+// history is pi's conversation without system messages; it registers the results
+// and any steer with the recording.
+func (b *Bridge) deliverToolResults(ctx context.Context, host Host, q *QueryContext, results []convert.McpResult, steer []any, history []map[string]any) {
+	contextLength := len(history)
+	if err := q.recording.Results(history); err != nil {
+		b.debugf("recording: tool results could not be digested: %v", err)
+	}
 	if len(steer) > 0 {
-		b.pushSteer(ctx, q, steer)
+		b.pushSteer(ctx, q, steer, history)
 	}
 
 	type release struct {
@@ -757,8 +774,9 @@ func (b *Bridge) deliverToolResults(ctx context.Context, host Host, q *QueryCont
 }
 
 // pushSteer writes a steer to Claude Code's stdin and waits for the write. A steer
-// that cannot be written is recorded as missed; the tool results are delivered anyway.
-func (b *Bridge) pushSteer(ctx context.Context, q *QueryContext, steer []any) {
+// that cannot be written leaves a coverage gap (no replay acknowledgement ever
+// comes, so the next sync imports it from pi); the tool results are delivered anyway.
+func (b *Bridge) pushSteer(ctx context.Context, q *QueryContext, steer []any, history []map[string]any) {
 	parts := make([]string, len(steer))
 	for i, raw := range steer {
 		if blk := obj(raw); blk["type"] == "text" {
@@ -775,24 +793,25 @@ func (b *Bridge) pushSteer(ctx context.Context, q *QueryContext, steer []any) {
 	if ps != nil {
 		uuid = newUUID()
 		// Registered before the write: a result can arrive during it.
-		q.pendingSteerUUIDs[uuid] = struct{}{}
+		q.addPendingSteer(uuid)
 	}
 	q.mu.Unlock()
 	if ps == nil {
 		b.debugf("WARNING: steer with no prompt stream, dropping: %s", truncateRunes(text, 60))
-		b.steerMissedSession(q, text)
 		return
+	}
+	if err := q.recording.Users(history, turnStart(history), uuid, false, true); err != nil {
+		b.debugf("recording: steer could not be digested: %v", err)
 	}
 	msg := userMessage(steer, "next")
 	msg.UUID = uuid
 	if err := ps.Push(ctx, msg); err != nil {
-		// The query is ending: further input would wedge tool-result delivery. The
-		// steer is still in pi's context but the cursor is past it, so force a rebuild.
+		// The query is ending: further input would wedge tool-result delivery. No replay
+		// acknowledgement means no coverage slot; the next sync imports the steer from pi.
 		q.mu.Lock()
-		delete(q.pendingSteerUUIDs, uuid)
+		q.removePendingSteer(uuid)
 		q.mu.Unlock()
 		b.debugf("provider: steer push rejected, delivering tool result anyway: %v", err)
-		b.steerMissedSession(q, text)
 		return
 	}
 	b.debugf("provider: steer written to CC stdin before tool result: %s", truncateRunes(text, 60))

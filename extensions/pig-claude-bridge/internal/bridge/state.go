@@ -1,104 +1,119 @@
 package bridge
 
-import "sync"
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"sync"
+)
 
-// SessionState mirrors the Claude Code conversation one pi session's turns run on.
-// It is a value: the Bridge stores and returns copies, so a caller can never race
-// the map by holding one.
-type SessionState struct {
-	SessionID string
-	Cursor    int
-	Cwd       string
-	// PiSessionID is the pi session this CC conversation serves. Attribution for
-	// history rewrites: a subagent's compaction must not rebuild another session.
-	PiSessionID string
-	// NeedsRebuild forces the next sync down REBUILD: pi mutated its history
-	// (compact, tree navigation) or an abort left the JSONL indeterminate.
-	NeedsRebuild bool
-	// ForceRotate is set only where a CC subprocess was just killed. The dying
-	// process may still flush a late record to the old file, so REBUILD takes a
-	// fresh id and leaves the old file alone instead of racing it.
-	ForceRotate bool
+// Per-session state (index.ts "Session persistence"). One mirror per pi session:
+// a bridge process serves several sessions at once, and each session's reads,
+// writes and teardown marks touch only its own. Mirrors are pointers so a query
+// can hold the identity it synced from and compare-and-set against it at commit
+// (a stale completion never overwrites a replacement). Only DirtyTail is ever
+// written in place; everything else is replaced whole.
 
-	// markSeq counts markRebuildForSession and markSessionNeedsRebuild calls, so a
-	// sync can tell a mark that landed during its file I/O from the one it is consuming.
-	markSeq uint64
-}
-
-// noSession is the key for calls with no pi session id; they share one mirror.
-const noSession = "(none)"
-
-func sessionKey(piSessionID string) string {
-	if piSessionID == "" {
-		return noSession
-	}
-	return piSessionID
-}
-
-// sessionStateFor returns a copy of the mirror for piSessionID, or nil when it has none yet.
+// sessionStateFor returns the mirror for piSessionID, or nil when it has none. A pi
+// session reads its persisted pointer on first use (restart, /reload). Unattributed
+// calls ("" id) cannot safely share a mirror, so they have none and always import.
 func (b *Bridge) sessionStateFor(piSessionID string) *SessionState {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	s, ok := b.sessions[sessionKey(piSessionID)]
-	if !ok {
+	if piSessionID == "" {
 		return nil
 	}
-	return &s
-}
-
-// setSessionStateFor stores a copy of state, or deletes the mirror when state is nil.
-func (b *Bridge) setSessionStateFor(piSessionID string, state *SessionState) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if state == nil {
-		delete(b.sessions, sessionKey(piSessionID))
-		return
+	if !b.loaded[piSessionID] {
+		b.known[piSessionID] = true
+		b.loaded[piSessionID] = true
+		stored, rejected, err := LoadSessionState(b.deps.AgentDir, piSessionID)
+		if err != nil {
+			b.debugf("session state: %s: %v", piSessionID, err)
+		}
+		if rejected != "" {
+			b.diagDump("session_state_rejected", map[string]any{"piSessionId": piSessionID, "message": "Rejected persisted Claude session state: " + rejected})
+		}
+		if stored != nil {
+			b.sessions[piSessionID] = stored
+		}
 	}
-	b.sessions[sessionKey(piSessionID)] = *state
+	return b.sessions[piSessionID]
 }
 
-// markRebuildForSession records that pi rewrote piSessionID's history: its mirror
-// must REBUILD, and parked queries built from it go stale. Other sessions' mirrors
-// are untouched.
-func (b *Bridge) markRebuildForSession(piSessionID, event string) {
+// setSessionStateFor replaces (or plants) the mirror; nil removes it.
+func (b *Bridge) setSessionStateFor(piSessionID string, state *SessionState) {
+	if piSessionID == "" {
+		return
+	}
 	b.mu.Lock()
-	key := sessionKey(piSessionID)
-	state, ok := b.sessions[key]
-	if ok {
-		state.NeedsRebuild = true
-		state.markSeq++
-		b.sessions[key] = state
+	defer b.mu.Unlock()
+	b.known[piSessionID] = true
+	b.loaded[piSessionID] = true
+	if state == nil {
+		delete(b.sessions, piSessionID)
+	} else {
+		b.sessions[piSessionID] = state
+	}
+}
+
+// inheritSessionState plants the parent's mirror, dirty, for a pi fork or clone, so
+// its first turn forks the parent's Claude Code session instead of importing pi's
+// history. Memory only: the parent's own pointer is saved once its child exits.
+func (b *Bridge) inheritSessionState(parentFile, piSessionID string) error {
+	f, err := os.Open(parentFile)
+	if err != nil {
+		// pi writes a session file at its first message, so a parent without one has no state.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	line, err := r.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return fmt.Errorf("no session header in %s", parentFile)
+	}
+	var header struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+	}
+	if json.Unmarshal(line, &header) != nil || header.Type != "session" || header.ID == "" {
+		return fmt.Errorf("no session header in %s", parentFile)
+	}
+	parent := b.sessionStateFor(header.ID)
+	if parent == nil {
+		return nil
+	}
+	inherited := *parent
+	inherited.Recording = parent.Recording.Copy()
+	inherited.DirtyTail = true
+	b.setSessionStateFor(piSessionID, &inherited)
+	b.debugf("session_start:fork: inherited %s from piSession=%s piSession=%s", short(parent.CCSessionID), header.ID, piSessionID)
+	return nil
+}
+
+// markRebuildForSession records that pi rewrote piSessionID's history (compact,
+// tree): its mirror's tail is dirty and parked queries built from it go stale.
+// Other sessions' mirrors are untouched; an unattributed rewrite marks nothing.
+func (b *Bridge) markRebuildForSession(piSessionID, event string) {
+	state := b.sessionStateFor(piSessionID)
+	b.mu.Lock()
+	if state != nil {
+		state.DirtyTail = true
 	}
 	if piSessionID != "" {
 		b.historyRewritten[piSessionID] = struct{}{}
 	}
 	b.armStaleContextsLocked()
 	b.mu.Unlock()
-	if !ok {
-		b.debugf("%s: history rewritten, no session to mark yet", event)
+	if state == nil {
+		b.debugf("%s: history rewritten, no session to mark yet piSession=%s", event, orNone(piSessionID))
 		return
 	}
-	b.debugf("%s: marking needsRebuild on session %s", event, short(state.SessionID))
-}
-
-// markSessionNeedsRebuild flags piSessionID's mirror for REBUILD, and with rotate
-// for a fresh session id too (a CC subprocess was just killed and may still flush
-// to the old file). Unlike markRebuildForSession it arms no parked query. The mark
-// bumps markSeq so a sync in flight keeps it. A session with no mirror has nothing
-// to mark; false says so.
-func (b *Bridge) markSessionNeedsRebuild(piSessionID string, rotate bool) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	key := sessionKey(piSessionID)
-	state, ok := b.sessions[key]
-	if !ok {
-		return false
-	}
-	state.NeedsRebuild = true
-	state.ForceRotate = state.ForceRotate || rotate
-	state.markSeq++
-	b.sessions[key] = state
-	return true
+	b.debugf("%s: marking dirtyTail on session %s piSession=%s", event, short(state.CCSessionID), piSessionID)
 }
 
 // armStaleContexts copies each armed session's mark onto the parked queries built from it.
@@ -123,51 +138,63 @@ func short(id string) string {
 	return id
 }
 
-// lockSync serialises syncs on one session key and returns the unlock func.
+// lockSync serialises syncs on one pi session and returns the unlock func: the file
+// I/O of two syncs for one session must not interleave.
 func (b *Bridge) lockSync(piSessionID string) (unlock func()) {
-	key := sessionKey(piSessionID)
 	b.mu.Lock()
-	m, ok := b.syncLocks[key]
+	m, ok := b.syncLocks[piSessionID]
 	if !ok {
 		m = &sync.Mutex{}
-		b.syncLocks[key] = m
+		b.syncLocks[piSessionID] = m
 	}
 	b.mu.Unlock()
 	m.Lock()
 	return m.Unlock
 }
 
-// advanceCursor updates the live mirror, so a mark set meanwhile survives.
-func (b *Bridge) advanceCursor(piSessionID string, cursor int, cwd string) {
+// Children that are stopping or finishing, registered before their state is
+// committed: readers of their file wait for the real child exit, never just the
+// end of its frames. A healthy parked query is absent: it only appends past every
+// committed cut, so a reader never waits on it.
+
+func (b *Bridge) setWriter(ccSessionID string, exited <-chan struct{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	key := sessionKey(piSessionID)
-	if cur, ok := b.sessions[key]; ok {
-		cur.Cursor, cur.Cwd = cursor, cwd
-		b.sessions[key] = cur
+	b.writers[ccSessionID] = exited
+}
+
+// releaseWriter forgets the writer only while it is still exited's: a later query
+// may already have claimed the slot.
+func (b *Bridge) releaseWriter(ccSessionID string, exited <-chan struct{}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.writers[ccSessionID] == exited {
+		delete(b.writers, ccSessionID)
 	}
 }
 
-// storeRebuilt stores the rebuilt mirror, keeping any rewrite mark or forced
-// rotation that landed after snapshot was read: the new file predates that rewrite.
-func (b *Bridge) storeRebuilt(piSessionID string, snapshot *SessionState, rebuilt SessionState) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	key := sessionKey(piSessionID)
-	if cur, ok := b.sessions[key]; ok {
-		var was SessionState
-		if snapshot != nil {
-			was = *snapshot
-		}
-		// A mark counted by markSeq, or one stored without it (completeQuery records a
-		// missed steer on a mirror that had none when the steer was missed).
-		if cur.markSeq != was.markSeq || cur.NeedsRebuild && !was.NeedsRebuild {
-			rebuilt.NeedsRebuild = true
-		}
-		if cur.ForceRotate && !was.ForceRotate {
-			rebuilt.NeedsRebuild, rebuilt.ForceRotate = true, true
-		}
-		rebuilt.markSeq = cur.markSeq
+// waitForSessionWriter blocks until the child last writing ccSessionID has exited,
+// or ctx ends. "" waits for nothing.
+func (b *Bridge) waitForSessionWriter(ctx contextDone, ccSessionID string) error {
+	if ccSessionID == "" {
+		return nil
 	}
-	b.sessions[key] = rebuilt
+	b.mu.Lock()
+	exited := b.writers[ccSessionID]
+	b.mu.Unlock()
+	if exited == nil {
+		return nil
+	}
+	select {
+	case <-exited:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// contextDone is the part of context.Context waitForSessionWriter needs.
+type contextDone interface {
+	Done() <-chan struct{}
+	Err() error
 }

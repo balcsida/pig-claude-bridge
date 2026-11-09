@@ -3,23 +3,15 @@
 package convert
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccsession"
 )
 
 const ProviderID = "claude-bridge"
-
-// PiToSdkToolName maps pi tool names to Claude Code's builtin names. It is only
-// correct on the AskClaude path, where Claude Code runs its own tools — see
-// MapPiToolNameToSdk. Treat it as read-only.
-var PiToSdkToolName = map[string]string{
-	"read": "Read", "write": "Write", "edit": "Edit", "bash": "Bash",
-}
 
 var unsafeToolIDChars = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
@@ -36,13 +28,12 @@ func SanitizeToolID(id string) string {
 
 // MapPiToolNameToSdk names a pi tool as a rebuilt transcript has to call it.
 //
-// A non-nil custom map selects the provider path: the query runs with no builtin
-// tools, so every callable tool is a pi tool served as mcp__custom-tools__<name>,
-// and the map carries the served tool's exact casing. A name it lacks is a tool
-// pi ran that is not served now; naming it after a Claude Code builtin would
-// announce a tool the model cannot call (the phantom-call deadlock), so it gets
-// the MCP prefix. A nil map selects the AskClaude path, where builtin names are
-// real.
+// The provider runs Claude Code with no builtin tools, so every callable tool is a
+// pi tool served as mcp__custom-tools__<name>, and custom carries the served
+// tool's exact casing. A name it lacks is a tool pi ran that is not served now;
+// naming it after a Claude Code builtin would announce a tool the model cannot
+// call (the phantom-call deadlock), so it gets the MCP prefix. A nil map is an
+// empty one.
 //
 // It errors on a name that already carries the MCP prefix: pi history holds pi
 // tool names, and prefixing twice invents a tool nobody serves.
@@ -54,12 +45,6 @@ func MapPiToolNameToSdk(name string, custom map[string]string) (string, error) {
 	if strings.HasPrefix(normalized, MCPToolPrefix) {
 		return "", fmt.Errorf("mapPiToolNameToSdk: %q is already an SDK tool name — pi history holds pi tool names", name)
 	}
-	if custom == nil {
-		if sdk, ok := PiToSdkToolName[normalized]; ok {
-			return sdk, nil
-		}
-		return pascalCase(name), nil
-	}
 	if sdk, ok := custom[name]; ok {
 		return sdk, nil
 	}
@@ -67,34 +52,6 @@ func MapPiToolNameToSdk(name string, custom map[string]string) (string, error) {
 		return sdk, nil
 	}
 	return MCPToolPrefix + name, nil
-}
-
-var (
-	splitLowerUpper = regexp.MustCompile(`([\p{Ll}\d])(\p{Lu})`)
-	splitUpperUpper = regexp.MustCompile(`(\p{Lu})(\p{Lu}\p{Ll})`)
-	stripNonWord    = regexp.MustCompile(`[^\p{L}\d]+`)
-)
-
-// pascalCase is change-case's pascalCase with default options.
-func pascalCase(input string) string {
-	s := strings.TrimSpace(input)
-	s = splitLowerUpper.ReplaceAllString(s, "${1}\x00${2}")
-	s = splitUpperUpper.ReplaceAllString(s, "${1}\x00${2}")
-	s = strings.Trim(stripNonWord.ReplaceAllString(s, "\x00"), "\x00")
-	if s == "" {
-		return ""
-	}
-	var out strings.Builder
-	for i, word := range strings.Split(s, "\x00") {
-		first := []rune(word)[0]
-		if i > 0 && first >= '0' && first <= '9' {
-			out.WriteString("_" + string(first))
-		} else {
-			out.WriteRune(unicode.ToUpper(first))
-		}
-		out.WriteString(strings.ToLower(string([]rune(word)[1:])))
-	}
-	return out.String()
 }
 
 // flatBlock is the part of a content block the text helpers read, whether it
@@ -203,26 +160,35 @@ func toolResultContent(content any) any {
 	return out
 }
 
-// Dropped is what ConvertPiMessages discarded, for the debug line. Nothing
-// downstream can tell a stripped thinking block from one never sent.
-type Dropped struct {
-	Thinking     int
-	AbortedTurns int
-	Providers    []string // insertion-ordered, without duplicates
-	Other        map[string]int
-}
-
-func (d *Dropped) addProvider(p string) {
-	if !slices.Contains(d.Providers, p) {
-		d.Providers = append(d.Providers, p)
+// nonEmptyToolResultContent is the result's content, or the placeholder Claude Code
+// itself substitutes live for an empty one (the API rejects an empty result marked is_error).
+func nonEmptyToolResultContent(msg map[string]any, custom map[string]string) (any, error) {
+	content := toolResultContent(msg["content"])
+	if text, ok := content.(string); !ok || strings.TrimSpace(text) != "" {
+		return content, nil
 	}
+	if isError, _ := msg["isError"].(bool); isError {
+		return "Command failed with no output", nil
+	}
+	name, err := MapPiToolNameToSdk(str(msg["toolName"]), custom)
+	if err != nil {
+		return nil, err
+	}
+	return "(" + name + " completed with no output)", nil
 }
 
-// ConvertPiMessages converts a pi message array to Anthropic messages.
-func ConvertPiMessages(messages []map[string]any, custom map[string]string) (anthropic []ccsession.Message, sanitizedIDs map[string]string, dropped Dropped, err error) {
+// ConvertPiMessages converts a pi message array to Anthropic messages. recorded
+// replaces a tool result, by pi tool call id, with the block Claude Code recorded
+// for it, verbatim. origins lists, per Anthropic message, the indices of the pi
+// messages it came from (a results message collects every result of its turn).
+func ConvertPiMessages(messages []map[string]any, custom map[string]string, recorded map[string]json.RawMessage) (anthropic []ccsession.Message, sanitizedIDs map[string]string, origins [][]int, err error) {
 	anthropic = []ccsession.Message{}
+	origins = [][]int{}
 	sanitizedIDs = map[string]string{}
-	dropped.Other = map[string]int{}
+	appendMsg := func(m ccsession.Message, index int) {
+		anthropic = append(anthropic, m)
+		origins = append(origins, []int{index})
+	}
 	sanitize := func(id string) string {
 		if existing := sanitizedIDs[id]; existing != "" {
 			return existing
@@ -237,10 +203,10 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 	turnResultsIdx, turnAssistantIdx := -1, -1
 	var turnResults []ccsession.Block
 
-	for _, msg := range messages {
+	for piIndex, msg := range messages {
 		switch msg["role"] {
 		case "user":
-			anthropic = append(anthropic, ccsession.Message{Role: "user", Content: userContent(msg["content"])})
+			appendMsg(ccsession.Message{Role: "user", Content: userContent(msg["content"])}, piIndex)
 		case "assistant":
 			var content []map[string]any
 			switch c := msg["content"].(type) {
@@ -263,13 +229,6 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 					// Anthropic rejects ones it cannot verify.
 					if sig := str(block["thinkingSignature"]); msg["provider"] == ProviderID && sig != "" {
 						blocks = append(blocks, ccsession.ThinkingBlock{Type: "thinking", Thinking: str(block["thinking"]), Signature: sig})
-					} else {
-						dropped.Thinking++
-						provider, ok := msg["provider"].(string)
-						if !ok {
-							provider = "unknown" // the TypeScript's ?? keeps ""
-						}
-						dropped.addProvider(provider)
 					}
 				case typ == "toolCall":
 					input := block["arguments"]
@@ -278,11 +237,9 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 					}
 					name, err := MapPiToolNameToSdk(str(block["name"]), custom)
 					if err != nil {
-						return nil, nil, Dropped{}, err
+						return nil, nil, nil, err
 					}
 					blocks = append(blocks, ccsession.ToolUseBlock{Type: "tool_use", ID: sanitize(str(block["id"])), Name: name, Input: input})
-				default:
-					dropped.Other[typ]++
 				}
 			}
 			// A turn aborted before anything streamed carries no content at all.
@@ -291,7 +248,6 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 			// alone: clearing it would split parallel results across an abort and
 			// make the repair stub the real one.
 			if len(content) == 0 {
-				dropped.AbortedTurns++
 				continue
 			}
 			// Blocks were present but every one was filtered; empty content is
@@ -301,18 +257,28 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 			}
 			turnResultsIdx, turnResults = -1, nil
 			turnAssistantIdx = len(anthropic)
-			anthropic = append(anthropic, ccsession.Message{Role: "assistant", Content: blocks})
+			appendMsg(ccsession.Message{Role: "assistant", Content: blocks}, piIndex)
 		case "toolResult":
 			// Pi records one message per tool result, but the repair only pairs
 			// results sharing the user message directly after their assistant
 			// message. Collect them into the turn's first results message, placed
 			// right after the assistant message even when a steer landed between.
-			isError, _ := msg["isError"].(bool)
-			turnResults = append(turnResults, ccsession.ToolResultBlock{
-				Type: "tool_result", ToolUseID: sanitize(str(msg["toolCallId"])), Content: toolResultContent(msg["content"]), IsError: isError,
-			})
+			id := sanitize(str(msg["toolCallId"]))
+			var block ccsession.Block
+			if raw, ok := recorded[str(msg["toolCallId"])]; ok {
+				block = ccsession.RawBlock(raw)
+			} else {
+				content, err := nonEmptyToolResultContent(msg, custom)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				isError, _ := msg["isError"].(bool)
+				block = ccsession.ToolResultBlock{Type: "tool_result", ToolUseID: id, Content: content, IsError: isError}
+			}
+			turnResults = append(turnResults, block)
 			if turnResultsIdx >= 0 {
 				anthropic[turnResultsIdx].Content = turnResults
+				origins[turnResultsIdx] = append(origins[turnResultsIdx], piIndex)
 				continue
 			}
 			results := ccsession.Message{Role: "user", Content: turnResults}
@@ -325,9 +291,12 @@ func ConvertPiMessages(messages []map[string]any, custom map[string]string) (ant
 			anthropic = append(anthropic, ccsession.Message{})
 			copy(anthropic[turnResultsIdx+1:], anthropic[turnResultsIdx:])
 			anthropic[turnResultsIdx] = results
+			origins = append(origins, nil)
+			copy(origins[turnResultsIdx+1:], origins[turnResultsIdx:])
+			origins[turnResultsIdx] = []int{piIndex}
 		}
 	}
-	return anthropic, sanitizedIDs, dropped, nil
+	return anthropic, sanitizedIDs, origins, nil
 }
 
 func userContent(content any) any {

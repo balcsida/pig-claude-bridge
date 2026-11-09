@@ -185,6 +185,19 @@ func TestHandleRateLimitEvent(t *testing.T) {
 			t.Fatalf("rejection = %+v", q.rateLimitRejection)
 		}
 	})
+	t.Run("a rejection served by Extra Usage says requests are billed to it (pi-claude-bridge #201, #213)", func(t *testing.T) {
+		b, _, _ := newTestBridge(t, false)
+		h := &recordingHost{}
+		b.handleRateLimitEvent(h, newQueryContext(), RateLimitInfo{Status: "rejected", RateLimitType: "five_hour", ResetsAt: fp(1786141800), IsUsingOverage: true})
+		b.handleRateLimitEvent(h, newQueryContext(), RateLimitInfo{Status: "rejected", IsUsingOverage: true})
+		want := []string{
+			"warning: Claude subscription rate limit reached (five_hour) — requests are now billed to Extra Usage until 10:30:00 PM",
+			"warning: Claude subscription rate limit reached (unknown) — requests are now billed to Extra Usage",
+		}
+		if !reflect.DeepEqual(h.notices, want) {
+			t.Fatalf("notices = %q", h.notices)
+		}
+	})
 	t.Run("a rejection without type or reset says unknown", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		h := &recordingHost{}
@@ -362,7 +375,7 @@ func TestFooterShowsThePlanAndFastModeBeforeTheUsage(t *testing.T) {
 	}
 
 	b.plan = "max"
-	b.OnSessionStart(h, "startup")
+	b.OnSessionStart(h, "startup", "")
 	if got := h.statuses[UsageStatusKey]; got != "Claude Max" {
 		t.Fatalf("at session start: status = %q", got)
 	}

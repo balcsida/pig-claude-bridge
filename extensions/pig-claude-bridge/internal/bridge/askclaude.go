@@ -65,19 +65,19 @@ func (b *Bridge) PromptAndWait(ctx context.Context, host Host, r AskRequest) (te
 	}
 
 	// A non-isolated call continues the session the provider already keeps for this pi
-	// session, or creates one from pi's context. It does not move the mirror's cursor,
-	// so the next provider call sees the missed messages and rebuilds.
+	// session, or imports pi's context into one of its own. The provider's mirror is
+	// not touched (D8): its recording does not cover what AskClaude adds, so the next
+	// provider turn forks or rewrites from the content comparison as usual.
 	resume := ""
 	if !r.Isolated && len(r.Context) > 0 {
 		if state := b.sessionStateFor(r.PiSessionID); state != nil {
-			resume = state.SessionID
+			resume = state.CCSessionID
 		} else {
 			withPrompt := append(slices.Clone(r.Context), map[string]any{"role": "user", "content": r.Prompt, "timestamp": b.deps.Now().UnixMilli()})
-			synced, err := b.syncSharedSession(host, r.PiSessionID, withPrompt, nil, cwd, cliModel)
-			if err != nil {
+			var err error
+			if resume, err = b.importForAskClaude(host, withPrompt, cwd, cliModel); err != nil {
 				return "", err
 			}
-			resume = synced.SessionID
 		}
 	}
 

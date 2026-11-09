@@ -1,0 +1,401 @@
+[
+	{
+		"name": "user string",
+		"message": {
+			"role": "user",
+			"content": "hello",
+			"timestamp": 1
+		},
+		"digest": "c5aa0403c3c5e6da16e306b9cdb3c7f08174e505f59cef491f344b9dbbffc20b"
+	},
+	{
+		"name": "user string, metadata ignored",
+		"message": {
+			"role": "user",
+			"content": "hello",
+			"timestamp": 2,
+			"id": "x"
+		},
+		"digest": "c5aa0403c3c5e6da16e306b9cdb3c7f08174e505f59cef491f344b9dbbffc20b"
+	},
+	{
+		"name": "user empty string",
+		"message": {
+			"role": "user",
+			"content": ""
+		},
+		"digest": "cb94e8aa0556fa2f8ceea9e753a381a0acb6d4fd93004fbb7e2f908f71b21360"
+	},
+	{
+		"name": "user non-array content",
+		"message": {
+			"role": "user",
+			"content": 5
+		},
+		"digest": "d044514d1276f77d8ae208d7967e520e365c8cbc46f22161466c6ba47a31640d"
+	},
+	{
+		"name": "user blocks with text and image",
+		"message": {
+			"role": "user",
+			"content": [
+				{
+					"type": "text",
+					"text": "see"
+				},
+				{
+					"type": "image",
+					"data": "AAAA",
+					"mimeType": "image/png"
+				},
+				{
+					"type": "text",
+					"text": ""
+				}
+			]
+		},
+		"digest": "d5e57d84ff7ffa93843d5ab3ef0a325386a4ee26939f077b59194c6b4b6fa575"
+	},
+	{
+		"name": "user blocks with nothing usable",
+		"message": {
+			"role": "user",
+			"content": [
+				{
+					"type": "text",
+					"text": ""
+				},
+				{
+					"type": "image",
+					"data": ""
+				}
+			]
+		},
+		"digest": "b1235c46d6811639e0a75cf47f33473d25527b7bde315c7421c6912e25a0ee41"
+	},
+	{
+		"name": "user text with astral and accented characters",
+		"message": {
+			"role": "user",
+			"content": "árvíztűrő 😀 tükörfúrógép"
+		},
+		"digest": "ca766f19a5aa2c7215e2fb5da09aca1be36b143c304fd010b50b504e17e9a303"
+	},
+	{
+		"name": "toolResult text",
+		"message": {
+			"role": "toolResult",
+			"toolCallId": "call_1",
+			"toolName": "read",
+			"content": [
+				{
+					"type": "text",
+					"text": "A"
+				}
+			],
+			"isError": false
+		},
+		"digest": "f4168beb563cd0f2299914597c7384447c8b91307ba833fb49f1d3647bf3ce22"
+	},
+	{
+		"name": "toolResult error",
+		"message": {
+			"role": "toolResult",
+			"toolCallId": "call_1",
+			"toolName": "read",
+			"content": [
+				{
+					"type": "text",
+					"text": "A"
+				}
+			],
+			"isError": true
+		},
+		"digest": "79bbce915ab55f6c9153746a65d971b07425434099df926f000482cef0b08927"
+	},
+	{
+		"name": "toolResult string content",
+		"message": {
+			"role": "toolResult",
+			"toolCallId": "call_2",
+			"content": "plain"
+		},
+		"digest": "69dbc8c36d2165b1d64e84a0e8edd905bce2aeefdbac0e67f8e7c1cadbdc4d45"
+	},
+	{
+		"name": "toolResult with image",
+		"message": {
+			"role": "toolResult",
+			"toolCallId": "call_3",
+			"content": [
+				{
+					"type": "text",
+					"text": "shot"
+				},
+				{
+					"type": "image",
+					"data": "QUJD",
+					"mimeType": "image/jpeg"
+				},
+				{
+					"type": "widget"
+				}
+			]
+		},
+		"digest": "f8f079f9077871a378494195528558b5f8f132df1a79a4c6347a2b496f3872ce"
+	},
+	{
+		"name": "toolResult with a non-text block and no image",
+		"message": {
+			"role": "toolResult",
+			"toolCallId": "call_4",
+			"content": [
+				{
+					"type": "text",
+					"text": "x"
+				},
+				{
+					"type": "widget"
+				}
+			]
+		},
+		"digest": "f1f6fc8bb3328a6e50caa16fb39955e8542e3bda1628f2ff50a3db50a5ff52e4"
+	},
+	{
+		"name": "toolResult id with newline framing",
+		"message": {
+			"role": "toolResult",
+			"toolCallId": "a\nb",
+			"content": "c"
+		},
+		"digest": "ff5e34eef0640053d54a9e80e6abbae99d741ea9a8ecebc0e47d60635260fd92"
+	},
+	{
+		"name": "toolResult id framing swapped",
+		"message": {
+			"role": "toolResult",
+			"toolCallId": "a",
+			"content": "\nbc"
+		},
+		"digest": "a0065882f23d157ed53909dae8f49750ccb62d02f04960a9b97b08a1cec4c829"
+	},
+	{
+		"name": "assistant omitted",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": []
+		},
+		"digest": "28c089bc5ff4073f205c572b041c1bc15e160172d71faf76a3740cc0fd526665"
+	},
+	{
+		"name": "assistant non-array content",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": "text"
+		},
+		"digest": "28c089bc5ff4073f205c572b041c1bc15e160172d71faf76a3740cc0fd526665"
+	},
+	{
+		"name": "assistant placeholder: foreign thinking only",
+		"message": {
+			"role": "assistant",
+			"provider": "anthropic",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "t",
+					"thinkingSignature": "sig-0123"
+				}
+			]
+		},
+		"digest": "bd4ec59d4a651dab908752cdd0aef182dee4dcfdb370a94a647462fce74b8f58"
+	},
+	{
+		"name": "assistant placeholder: unsigned bridge thinking",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "t"
+				}
+			]
+		},
+		"digest": "bd4ec59d4a651dab908752cdd0aef182dee4dcfdb370a94a647462fce74b8f58"
+	},
+	{
+		"name": "assistant text",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "text",
+					"text": "hi"
+				}
+			],
+			"usage": {
+				"input": 9
+			},
+			"stopReason": "stop"
+		},
+		"digest": "dc90de8375a12920a587cb422ad527195c1f3b792efcf1e3eb5717e895ac862b"
+	},
+	{
+		"name": "assistant signed bridge thinking and text",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "t",
+					"thinkingSignature": "sig-0123"
+				},
+				{
+					"type": "text",
+					"text": "hi"
+				}
+			]
+		},
+		"digest": "8ef29b49707c360e69b382db71dff561457c9054db89836db547c1540b708832"
+	},
+	{
+		"name": "assistant signed bridge thinking without text",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "thinking",
+					"thinkingSignature": "sig-0123"
+				}
+			]
+		},
+		"digest": "f83ae89c9ec3dfad68990cd6cadb52a23a1dcf28b55f4291f34804f14004928f"
+	},
+	{
+		"name": "assistant tool call with canonical arguments",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_1",
+					"name": "read",
+					"arguments": {
+						"b": 1,
+						"a": "x"
+					}
+				}
+			]
+		},
+		"digest": "6c5343c769406ba7f3b0c03ec9954aeafe8a6baea5f3fad63aeb97e745da9142"
+	},
+	{
+		"name": "assistant tool call with the same arguments in another key order",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_1",
+					"name": "read",
+					"arguments": {
+						"a": "x",
+						"b": 1
+					}
+				}
+			]
+		},
+		"digest": "6c5343c769406ba7f3b0c03ec9954aeafe8a6baea5f3fad63aeb97e745da9142"
+	},
+	{
+		"name": "assistant tool call without arguments",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_1",
+					"name": "read"
+				}
+			]
+		},
+		"digest": "79058bd0f22cc2b8156496707c2d11f92c1d2276db4e353f029244ebf953a342"
+	},
+	{
+		"name": "assistant tool call with every JSON value kind",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "c",
+					"name": "t",
+					"arguments": {
+						"n": [
+							1,
+							1.5,
+							-2,
+							1e+21,
+							1e-7,
+							0.000001,
+							123456789012345680000,
+							0,
+							0,
+							3
+						],
+						"b": [
+							true,
+							false
+						],
+						"z": null,
+						"o": {
+							"k": []
+						},
+						"s": ""
+					}
+				}
+			]
+		},
+		"digest": "58159744b05613c486b17aaf37c2d01eb16fd0f5f0c9acd684c17550f75d610a"
+	},
+	{
+		"name": "assistant parallel tool calls and text",
+		"message": {
+			"role": "assistant",
+			"provider": "claude-bridge",
+			"content": [
+				{
+					"type": "text",
+					"text": "doing"
+				},
+				{
+					"type": "toolCall",
+					"id": "a",
+					"name": "bash",
+					"arguments": {
+						"command": "ls"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "b",
+					"name": "read",
+					"arguments": {
+						"path": "/x"
+					}
+				}
+			]
+		},
+		"digest": "a10623e2ff483d7cea2e436ad6a9ed4243b62b2cd5b6975ce0ca1d9870289013"
+	}
+]

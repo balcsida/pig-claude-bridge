@@ -10,8 +10,8 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 | PiG Go SDK | `github.com/MichaelKinsy/PiG/extensions/sdk` v0.7.0, Go 1.26 floor |
 | Claude Code | 2.1.310 minimum (the port warns when the binary is older); verified against 2.1.319 |
 | Agent SDK protocol | `@anthropic-ai/claude-agent-sdk` 0.3.310 (Claude Code 2.1.310); [reference](reference/agent-sdk-protocol-0.3.310.md). 0.3.308 to 0.3.310 changes nothing on the wire that the bridge uses; the one new control subtype, survey feedback, is never sent |
-| pi-claude-bridge | `6aa276a`, https://github.com/elidickinson/pi-claude-bridge, plus the later commits listed in [../UPSTREAM.md](../UPSTREAM.md) (see "Ported after 6aa276a" below) |
-| cc-session-io | 0.4.0 (MIT) |
+| pi-claude-bridge | `acbe45b` (0.11.0), https://github.com/elidickinson/pi-claude-bridge; see "Caught up to 0.11.0" below for what is not ported |
+| cc-session-io | 0.4.1 (MIT), the subset the bridge imports (`addToolResultBlocks` as `AddToolResultBlocks`; the 0.4.1 timestamp stamping is approximated by the port's monotonic clock) |
 | Pi compatibility surface | pi 1.4.0 (the Pi that PiG 0.5.3 tracks) |
 | `@modelcontextprotocol/sdk` | 1.31.0 (the TypeScript declares `^1.29.0`), only as the reference for the JSON-RPC responses the in-process MCP server produces |
 | Model catalog | `@earendil-works/pi-ai` 1.2.0, generated into `internal/models/catalog_gen.go` |
@@ -31,6 +31,12 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 **D6. AskClaude renders as lines.** TypeScript: `askclaude-ui.ts` builds pi-tui components (colour, "(to expand)" affordance). Port: PiG's `ToolDefinition.RenderCall`/`RenderResult` return lines, so the action summary is plain lines without colour, with "… (to expand)" as text, and truncation counts runes.
 
 **D7. Summary attribution by the most recent pending compaction.** TypeScript: `session-cwd.ts` keys the pending summary session by the identity of the request's `AbortSignal`. Port: Go has no such identity, so a single most-recent-pending slot is set at `session_before_compact` / `session_before_tree` and the isolated summary query reads it; it is not cleared by the read (Pi makes several summary calls per operation, compaction makes two) and `forgetSummarySession` clears it only if no other session has been remembered since. With two sessions summarising at once in one process, the later one wins. A compaction that fails or is aborted never reaches `session_compact`, so the port also forgets the pending session at PiG's `session_compact_failed` (fired after a failed or aborted compaction, PiG `compaction.md`); without it the stale slot would hand that session's cwd to a later summary from another session. The TypeScript needs no such hook because a cancelled compaction's signal is never looked up again. A cancelled tree navigation has no failure event, so its slot stays until the next `session_before_compact` or `session_before_tree` replaces it.
+
+**D8. AskClaude stays in this package.** TypeScript 0.11.0 moved the tool to `pi-claude-bridge-askclaude`, its own npm package with its own copy of the conversion and child env. Port: the tool stays in `internal/askclaude`, off unless `askClaude.enabled` is set, and its shared mode imports pi's history into a session of its own (`importForAskClaude`) without touching the provider's mirror. Reason: a second Go package means a second binary, release flow and repo for a tool that is already opt-in.
+
+**D9. No cache trace.** TypeScript: `CLAUDE_BRIDGE_TRACE_DIR` writes a per-query trace (`src/cache-trace.ts`) that `diag/audit-cache.mjs` analyses. Port: not ported; `CLAUDE_BRIDGE_DEBUG` and the `syncResult:` decision lines remain. Reason: debug tooling with no user-facing behaviour.
+
+**D10. Shutdown kills every live child.** TypeScript: `session_shutdown` closes only the shutting-down session's parked queries, since subagents share the process. Port: the session's own parked queries are closed first with their progress committed, then every Claude Code child this process started is killed (as before). Reason: PiG subagents are separate processes (D4), so another session's live query in the same process does not occur.
 
 ## Rulings that changed the plan
 
@@ -71,8 +77,10 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 
 ### Session files and logs
 
-- `syncSharedSession` takes `host` and `modelID`.
-- The `APPEND` log line prints the advanced cursor (TypeScript prints the pre-advance cursor).
+- `syncSharedSession` takes `host`, `modelID` and `promptDigest`; its `syncResult:` line carries the row and reason in one line where the TypeScript logs them across its trace.
+- The persisted state file is the TypeScript's (`s-<sha256 of the UTF-16LE pi session id>.json`, version 1), under PiG's agent dir rather than Pi's, so the two bridges never read each other's pointers.
+- A prefix write re-emits the retained records through a key-order-preserving field rewrite (`sessionId`, and `parentUuid` on the suffix's first record), where the TypeScript spreads the object.
+- The fake Claude Code the unit tests drive echoes completed blocks before closing them and writes session records, as the real one does; the TypeScript tests stub the SDK instead.
 - The `[moduleInstanceId]` bracket is dropped from log lines (the TypeScript `diag/*.mjs` parsers expect it); the deadlock-check regex was adapted. The `imported roles:` debug line and the sanitized-id list are dropped.
 - Stderr tail counts runes where the SDK counts UTF-16 units.
 - An empty `CLAUDE_CONFIG_DIR` counts as unset (`??` in JavaScript would use it), and with `HOME` unset the Claude config dir falls back to the account's home directory instead of a relative `.claude`.
@@ -84,7 +92,7 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 ### Provider stream and notices
 
 - `Details.executionTime` is an `int64`.
-- The "Claude Code returned an error result" replacement is unreachable, as in the TypeScript (the loop stops at the error result). An error result drops the mirror, while a process exit or panic marks rebuild (the TypeScript drops the mirror on exit too).
+- The "Claude Code returned an error result" replacement is unreachable, as in the TypeScript (the loop stops at the error result). A failed query (error result, process exit, panic) commits its recording dirty, as the TypeScript does; nothing drops the mirror any more.
 - Abort lifetime is proven by the live smoke's tool round trip. Abort follows `ctx.Signal()`, PiG's run-scoped signal, where the plan said `ctx.Done()`: the per-request `Done()` is cancelled when each provider call ends, which would kill a query parked at a tool call between calls; `Done()` is used only when a context carries no signal.
 - Abort is honoured while Claude Code starts: the call's cancellation reaches the spawn until the `initialize` answer arrives (spike S2 saw about 4 s, inferred to be user `SessionStart` hooks), so an abort then ends the turn as aborted instead of waiting; after that, the stream's own abort wiring takes over, so a parked query still survives between calls. The isolated and AskClaude paths spawn under the call's context. `claude --version` is bounded by 10 s and runs once at a time; a probe that times out is logged and does not fail the query, and an abort during the probe ends the turn as aborted without caching a result. Only the leading `x.y.z` of the version output is read.
 - The cost of a turn leaves out pi-ai's `cost.tiers` and `cacheWrite1h`. The registered models carry zero rates and no tiers, so the cost is zero either way.
@@ -127,18 +135,13 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 - The alternative provider for the AskClaude, image and session-resume tests must come from `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER`, `CLAUDE_BRIDGE_TESTING_ALT_MODEL` and that provider's API-key variable, because every live run uses a fresh `PIG_HOME`/`PIG_CODING_AGENT_DIR` (the TypeScript suite used the real agent dir). Without them those checks skip.
 - The deadlock-check log pattern, the shutdown test (a third case for the stdin close) and the subagent test (our own agent definition, run through `@tintinweb/pi-subagents`) are adapted as listed in [verification.md](verification.md).
 
-## Ported after 6aa276a
+## Caught up to 0.11.0
 
-Upstream pi-claude-bridge moved on to 0.11.0 (acbe45b, 100 commits) after the pin. These were ported on their own, each with the TypeScript commit; the rest is listed below.
-
-- **Child environment (f502f5d, 2edde93).** `CLAUDE_CODE_SILENT_TURN_REMINDER=0`, `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=16384` and `CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1` join `CCChildEnv`. The argv snapshot predates them, so `TestArgvMatchesNodeSdkSnapshot` sets them aside and `TestBuildEnv` pins their values.
-- **Parent-session markers (e93d51d, #198).** When `CLAUDECODE` is set in PiG's environment, the parent Claude Code session's markers are dropped from the child env. The TypeScript also moved `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` off its own `process.env`; the port never set it there.
-- **Default output style (5c4a268, #220).** The provider's `--settings` carries `outputStyle: "default"`. Pinned live by `TestOutputStyleDefaultOverridesAUserLevelOutputStyle`.
-- **Thinking off (0b096a8, #152).** No reasoning level means `--thinking=disabled` on the provider and isolated paths, for reasoning models whose `thinkingLevelMap` does not mark `off` as `null`.
+The port followed pi-claude-bridge from 6aa276a to acbe45b (0.10.0 and 0.11.0, 100 commits). Ported: the content-based session sync (#222) with its live recording, cuts, prefix writes, forks and persisted state; the conversion changes (#227, #207, #242); the child environment (f502f5d, 2edde93, e93d51d), `settingSources: ["user"]` and the end of the project config (#198); the default output style (#220); thinking off (#152); provider env; the Extra Usage notice (#201, #213); same-session routing (#111); parked-query closing at shutdown (#210, as D10); the bash default timeout in the `tool_call` hook (#203); the fallback fix (87f67d1). The argv snapshot predates some of these, so `TestArgvMatchesNodeSdkSnapshot` sets `EnvAddedAfterSnapshot`, `--setting-sources=user`, `--session-id` and `outputStyle` aside, and the unit tests pin them instead.
 
 Port-only, with no TypeScript counterpart: **`CLAUDE_CODE_DISABLE_FEATURE_FLAGS=1`** in `CCChildEnv`. In Claude Code 2.1.319 feature-flag evaluation (`Ph()`) requires both no disable variable and telemetry on, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` counts as telemetry off, so the TypeScript already runs with flags off; the explicit variable also keeps the disk cache closed should `CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF` be exported, and `TestDisableFeatureFlagsTurnsFlagEvaluationOff` pins the behaviour.
 
-Not ported from 0.10.0 and 0.11.0: the content-digest session sync (#222: forks and trims instead of rebuilds, atomic session state, `/fork` and clone continuing the parent's Claude Code session), `CLAUDE_BRIDGE_TRACE_DIR`, provider `env` from `auth.json`, the Extra Usage billing notice, the empty-tool-result placeholder (#227), Claude Code's normalised tool args (#242), the `settingSources` change that stops loading a repo's `.claude/settings*.json` (#198), the AskClaude split into its own package, and the removal of the `provider.plan` notice (the port detects the plan instead). D1 to D7 above still hold.
+Not ported: the AskClaude split (D8), `CLAUDE_BRIDGE_TRACE_DIR` and the `diag/` tooling (D9), the per-session scope of shutdown (D10), the removal of the `provider.plan` startup notice (the port detects the plan instead and never asked), and the `BRIDGE_VERSION`/SDK version log line at load. D1 to D7 above still hold.
 
 ## Pi-only tests that are not ported
 

@@ -1,416 +1,222 @@
 package bridge
 
 import (
-	"encoding/json"
-	"fmt"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccsession"
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/config"
 )
 
-func user(text string) map[string]any { return map[string]any{"role": "user", "content": text} }
-func say(text string) map[string]any {
-	return map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}, "stopReason": "stop"}
-}
-func system(text string) map[string]any { return map[string]any{"role": "system", "content": text} }
+// Ports of the session-sync cases of pi-claude-bridge tests/unit-query-lifecycle.mjs
+// and unit-session-sync (#222), driven through the provider with scripted fakes.
 
-// seed writes a Claude Code session file holding user "Hi" / assistant "Hello.".
-func seed(t *testing.T, id, cwd string, attachments []ccsession.ImportAttachment) *ccsession.Session {
+// completedTurn runs one text turn for session and returns the Claude Code session it ran.
+func completedTurn(t *testing.T, h *providerHarness, session, prompt, answer string) string {
 	t.Helper()
-	s, err := ccsession.Create(ccsession.Options{SessionID: id, ProjectPath: cwd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	msgs := []ccsession.Message{
-		{Role: "user", Content: "Hi"},
-		{Role: "assistant", Content: []ccsession.Block{ccsession.TextBlock{Type: "text", Text: "Hello."}}},
-	}
-	if err := s.ImportMessages(msgs, attachments); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Save(); err != nil {
-		t.Fatal(err)
-	}
-	return s
+	h.script(answers("cc", answer))
+	finalOf(t, h.call(context.Background(), session, msgs(userMsg(prompt))))
+	h.waitLive(0)
+	return ccSession(h.lastSpawn())
 }
 
-func recordTypes(t *testing.T, id, cwd string) []string {
-	t.Helper()
-	s, err := ccsession.Open(id, cwd, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var types []string
-	for _, r := range s.Records() {
-		var h struct{ Type string }
-		if err := json.Unmarshal(r, &h); err != nil {
-			t.Fatal(err)
+func TestSessionSyncDecisions(t *testing.T) {
+	t.Run("an unchanged history reuses the session; a clean completion persists its state", func(t *testing.T) {
+		h := newProviderHarness(t, func(d *Deps) { d.Debug = true })
+		first := completedTurn(t, h, "pi-reuse", "hi", "one")
+		loaded, rejected, err := LoadSessionState(h.agentDir, "pi-reuse")
+		if err != nil || rejected != "" || loaded == nil || loaded.CCSessionID != first || len(loaded.Digests) != 2 {
+			t.Fatalf("persisted = %+v %q %v", loaded, rejected, err)
 		}
-		types = append(types, h.Type)
-	}
-	return types
-}
-
-const id1 = "11111111-1111-4111-8111-111111111111"
-
-func TestSyncSharedSession(t *testing.T) {
-	t.Run("takes the clean-start path when a transcript system message precedes the first user message", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		res, err := b.syncSharedSession(nil, "", []map[string]any{system("You are Claude Code."), user("Hello")}, nil, t.TempDir(), "")
-		if err != nil {
-			t.Fatal(err)
+		h.script(answers("cc", "two"))
+		finalOf(t, h.call(context.Background(), "pi-reuse", msgs(userMsg("hi"), sayMsg("one"), userMsg("again"))))
+		if o := h.lastSpawn().opts; o.Resume != first || o.ForkSession || o.SessionID != "" {
+			t.Fatalf("options = %+v", o)
 		}
-		if res.SessionID != "" || res.Action != ActionCleanStart || res.PreserveSharedSession {
-			t.Fatalf("got %+v", res)
-		}
-		if b.sessionStateFor("") != nil {
-			t.Fatal("a clean start must not create a session state")
+		if log := readDebugLog(t, h.agentDir); !strings.Contains(log, "path=reuse") {
+			t.Fatalf("log:\n%s", log)
 		}
 	})
 
-	t.Run("keeps cursor arithmetic consistent when system messages punctuate the history", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		cwd := t.TempDir()
-		seed(t, id1, cwd, nil)
-		b.setSessionStateFor("", &SessionState{SessionID: id1, Cursor: 2, Cwd: cwd})
-		msgs := []map[string]any{user("Hi"), say("Hello."), system(""), user("Next")}
-		res, err := b.syncSharedSession(nil, "", msgs, nil, cwd, "")
-		if err != nil {
-			t.Fatal(err)
+	t.Run("a restart reloads the persisted pointer dirty and forks at its last valid cut", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		first := completedTurn(t, h, "pi-restart", "hi", "one")
+		h.b.resetSharedSession() // a restart: memory gone, the file stays
+		h.script(answers("cc", "two"))
+		finalOf(t, h.call(context.Background(), "pi-restart", msgs(userMsg("hi"), sayMsg("one"), userMsg("again"))))
+		o := h.lastSpawn().opts
+		if o.Resume != first || !o.ForkSession || o.ResumeSessionAt == "" || o.SessionID == "" || o.SessionID == first {
+			t.Fatalf("a dirty pointer forks the session at its last cut: %+v", o)
 		}
-		if res.Action != ActionReuse || res.SessionID != id1 {
-			t.Fatalf("2 priors at cursor 2 must resume, got %+v", res)
-		}
-		if c := b.sessionStateFor("").Cursor; c != 2 {
-			t.Fatalf("cursor counts non-system messages only, got %d", c)
-		}
-		if got := recordTypes(t, id1, cwd); fmt.Sprint(got) != "[user assistant]" {
-			t.Fatalf("resumed file = %v", got)
+		h.waitLive(0)
+		if st := h.b.sessionStateFor("pi-restart"); st == nil || st.CCSessionID != o.SessionID || st.DirtyTail {
+			t.Fatalf("the fork's completion becomes the clean mirror: %+v", st)
 		}
 	})
 
-	t.Run("starts a fresh session for a shorter context and preserves the parent's", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		cwd := t.TempDir()
-		main := SessionState{SessionID: id1, Cursor: 42, Cwd: cwd}
-		b.setSessionStateFor("", &main)
-		res, err := b.syncSharedSession(nil, "", []map[string]any{user("Summarize this conversation.")}, nil, cwd, "")
-		if err != nil {
-			t.Fatal(err)
+	t.Run("a restart on another model imports pi's history instead of reusing the pointer", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		first := completedTurn(t, h, "pi-model", "hi", "one")
+		h.b.resetSharedSession()
+		h.script(answers("cc", "two"))
+		model := map[string]any{"api": "anthropic-messages", "provider": "anthropic", "id": "claude-opus-5-5"}
+		stream, _ := h.b.StreamSimple(context.Background(), h.host, model, map[string]any{"messages": msgs(userMsg("hi"), sayMsg("one"), userMsg("again"))}, map[string]any{"sessionId": "pi-model"})
+		finalOf(t, stream)
+		o := h.lastSpawn().opts
+		if o.Resume == first || o.Resume == "" || o.ForkSession || o.SessionID != "" {
+			t.Fatalf("a model change imports into a new session and resumes it: %+v", o)
 		}
-		if res.SessionID != "" || !res.PreserveSharedSession {
-			t.Fatalf("got %+v", res)
-		}
-		if got := *b.sessionStateFor(""); got != main {
-			t.Fatalf("parent mirror changed: %+v", got)
+		data, err := os.ReadFile(h.sessionFile(o.Resume, o.Cwd))
+		if err != nil || !strings.Contains(string(data), `"one"`) {
+			t.Fatalf("imported transcript: %v %s", err, data)
 		}
 	})
 
-	t.Run("does not report a count mismatch when a rebuild carries an attachment", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		cwd := t.TempDir()
-		prompt := "Review @fixture.txt and remember it."
-		file := filepath.Join(cwd, "fixture.txt")
-		s, err := ccsession.Create(ccsession.Options{SessionID: id1, ProjectPath: cwd})
-		if err != nil {
+	t.Run("a restart whose transcript is gone drops the persisted pointer and imports", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		first := completedTurn(t, h, "pi-gone", "hi", "one")
+		h.b.resetSharedSession()
+		if err := os.Remove(h.sessionFile(first, h.lastSpawn().opts.Cwd)); err != nil {
 			t.Fatal(err)
 		}
-		err = s.ImportMessages([]ccsession.Message{
-			{Role: "user", Content: prompt},
-			{Role: "assistant", Content: []ccsession.Block{ccsession.TextBlock{Type: "text", Text: "Noted."}}},
-		}, []ccsession.ImportAttachment{{AfterIndex: 0, Attachment: map[string]any{
-			"type": "file", "filename": file,
-			"content": map[string]any{"type": "text", "file": map[string]any{"filePath": file, "content": "token"}},
-		}}})
-		if err != nil {
-			t.Fatal(err)
+		h.script(answers("cc", "two"))
+		finalOf(t, h.call(context.Background(), "pi-gone", msgs(userMsg("hi"), sayMsg("one"), userMsg("again"))))
+		if o := h.lastSpawn().opts; o.Resume == first || o.Resume == "" || o.ForkSession {
+			t.Fatalf("options = %+v", o)
 		}
-		if err := s.Save(); err != nil {
-			t.Fatal(err)
-		}
-		b.setSessionStateFor("", &SessionState{SessionID: id1, Cursor: 0, Cwd: cwd})
-		host := &recordingHost{}
-		res, err := b.syncSharedSession(host, "", []map[string]any{user(prompt), say("Noted."), user("Now what did it say?")}, nil, cwd, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if res.Action != ActionRebuild || res.SessionID != id1 {
-			t.Fatalf("got %+v", res)
-		}
-		n := 0
-		for _, ty := range recordTypes(t, id1, cwd) {
-			if ty == "attachment" {
-				n++
+		if _, err := os.Stat(statePath(h.agentDir, "pi-gone")); !os.IsNotExist(err) {
+			// The old pointer is deleted; the new turn persists its own.
+			loaded, _, _ := LoadSessionState(h.agentDir, "pi-gone")
+			if loaded == nil || loaded.CCSessionID == first {
+				t.Fatalf("stale pointer survived: %+v", loaded)
 			}
 		}
-		if n != 1 {
-			t.Fatalf("the rebuild did not carry the attachment (%d), so this proves nothing about the count", n)
+	})
+
+	t.Run("an invalid persisted file is rejected, logged, and treated as no state", func(t *testing.T) {
+		h := newProviderHarness(t, func(d *Deps) { d.Debug = true })
+		if err := os.MkdirAll(sessionsDir(h.agentDir), 0o700); err != nil {
+			t.Fatal(err)
 		}
-		if len(host.notices) != 0 {
-			t.Fatalf("notices = %v", host.notices)
+		if err := os.WriteFile(statePath(h.agentDir, "pi-bad"), []byte("{bad"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		h.script(answers("cc", "one"))
+		finalOf(t, h.call(context.Background(), "pi-bad", msgs(userMsg("hi"))))
+		if o := h.lastSpawn().opts; o.Resume != "" || o.SessionID == "" {
+			t.Fatalf("options = %+v", o)
+		}
+		diag, err := os.ReadFile(config.DiagLogPath(h.agentDir))
+		if err != nil || !strings.Contains(string(diag), "session_state_rejected") || !strings.Contains(string(diag), "invalid JSON") {
+			t.Fatalf("diag log: %s, %v", diag, err)
+		}
+	})
+
+	t.Run("an edited earlier answer keeps the prefix before it and imports the rest", func(t *testing.T) {
+		h := newProviderHarness(t, func(d *Deps) { d.Debug = true })
+		first := completedTurn(t, h, "pi-edit", "hi", "one")
+		h.script(answers("cc", "three"))
+		finalOf(t, h.call(context.Background(), "pi-edit", msgs(userMsg("hi"), sayMsg("one (edited)"), userMsg("again"))))
+		o := h.lastSpawn().opts
+		if o.Resume == "" || o.Resume == first || o.ForkSession || o.SessionID != "" {
+			t.Fatalf("a prefix write resumes the new file it wrote: %+v", o)
+		}
+		data, err := os.ReadFile(h.sessionFile(o.Resume, o.Cwd))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if !strings.Contains(text, `"hi"`) || !strings.Contains(text, "one (edited)") || strings.Contains(text, `"text":"one"}`) {
+			t.Fatalf("the kept prefix and the imported suffix: %s", text)
+		}
+		if log := readDebugLog(t, h.agentDir); !strings.Contains(log, "path=prefix-write") {
+			t.Fatalf("log:\n%s", log)
+		}
+	})
+
+	t.Run("an unattributed query imports every time and never writes provider state", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		h.script(answers("cc", "one"))
+		finalOf(t, h.call(context.Background(), "", msgs(userMsg("hi"))))
+		h.script(answers("cc", "two"))
+		finalOf(t, h.call(context.Background(), "", msgs(userMsg("hi"), sayMsg("one"), userMsg("again"))))
+		h.waitLive(0)
+		if o := h.lastSpawn().opts; o.Resume == "" || o.ForkSession {
+			t.Fatalf("options = %+v", o)
+		}
+		if entries, _ := os.ReadDir(sessionsDir(h.agentDir)); len(entries) != 0 {
+			t.Fatalf("state written for an unattributed session: %v", entries)
+		}
+	})
+
+	t.Run("a pi fork or clone forks its parent's Claude Code session instead of importing", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		first := completedTurn(t, h, "pi-parent", "hi", "one")
+		parentFile := filepath.Join(t.TempDir(), "parent.jsonl")
+		if err := os.WriteFile(parentFile, []byte(`{"type":"session","id":"pi-parent","version":1}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		h.host.sessionID, h.host.cwd = "pi-child", h.lastSpawn().opts.Cwd
+		h.b.OnSessionStart(h.host, "fork", parentFile)
+		h.script(answers("cc", "two"))
+		finalOf(t, h.call(context.Background(), "pi-child", msgs(userMsg("hi"), sayMsg("one"), userMsg("again"))))
+		if o := h.lastSpawn().opts; o.Resume != first || !o.ForkSession || o.SessionID == "" {
+			t.Fatalf("the child forks the parent's session: %+v", o)
+		}
+		if st := h.b.sessionStateFor("pi-parent"); st == nil || st.CCSessionID != first || st.DirtyTail {
+			t.Fatalf("the parent's own mirror is untouched: %+v", st)
 		}
 	})
 }
 
-func TestSyncOutcomes(t *testing.T) {
-	t.Run("APPEND advances the cursor past a trailing assistant and logs the reuse line", func(t *testing.T) {
-		b, _, agentDir := newTestBridge(t, true)
-		cwd := t.TempDir()
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, Cursor: 1, Cwd: "/old"})
-		res, err := b.syncSharedSession(nil, "pi-1", []map[string]any{user("Hi"), say("Hello."), user("Next")}, nil, cwd, "")
-		if err != nil {
-			t.Fatal(err)
+func TestParkedQueriesAndHistoryChanges(t *testing.T) {
+	t.Run("a fresh same-session prompt closes the parked query and keeps its progress", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		h.script(parksOnTool("cc", "toolu_1"))
+		finalOf(t, h.call(context.Background(), "pi-park", msgs(userMsg("read a")), readTool))
+		parked := h.liveFor("pi-park")
+		reply := callTool(context.Background(), spawnMcp{h.lastSpawn()}, "read", "toolu_1")
+		waitParked(t, parked, 1)
+
+		h.script(answers("cc", "fresh"))
+		fresh := finalOf(t, h.call(context.Background(), "pi-park", msgs(userMsg("read a"), userMsg("never mind, say fresh"))))
+		if replyText(fresh) != "fresh" || len(h.spawns()) != 2 {
+			t.Fatalf("reply = %v spawns = %d", fresh, len(h.spawns()))
 		}
-		if res.Action != ActionAppend || res.SessionID != id1 || res.Cursor != 2 {
-			t.Fatalf("got %+v", res)
+		if got := receive(t, reply, "the parked handler"); !strings.Contains(got.Text, "discarded") {
+			t.Fatalf("parked handler = %+v", got)
 		}
-		if st := b.sessionStateFor("pi-1"); st.Cursor != 2 || st.Cwd != cwd {
-			t.Fatalf("state = %+v", st)
-		}
-		if log := readDebugLog(t, agentDir); !strings.Contains(log, "syncResult: path=reuse sessionId="+id1+" cursor=2\n") {
-			t.Fatalf("log = %s", log)
+		if !parked.isAbandoned() {
+			t.Fatal("the parked query must be closed")
 		}
 	})
 
-	t.Run("REBUILD of a first turn writes a session and logs priors", func(t *testing.T) {
-		b, _, agentDir := newTestBridge(t, true)
-		cwd := t.TempDir()
-		res, err := b.syncSharedSession(nil, "pi-1", []map[string]any{user("Hi"), say("Hello."), user("Next")}, nil, cwd, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if res.Action != ActionRebuild || res.SessionID == "" || res.Cursor != 2 {
-			t.Fatalf("got %+v", res)
-		}
-		if st := b.sessionStateFor("pi-1"); st.SessionID != res.SessionID || st.Cursor != 2 || st.PiSessionID != "pi-1" {
-			t.Fatalf("state = %+v", st)
-		}
-		if got := recordTypes(t, res.SessionID, cwd); fmt.Sprint(got) != "[user assistant]" {
-			t.Fatalf("file = %v", got)
-		}
-		want := "syncResult: path=rebuild sessionId=" + res.SessionID + " priors=2 first\n"
-		if log := readDebugLog(t, agentDir); !strings.Contains(log, want) {
-			t.Fatalf("log = %s", log)
-		}
-	})
+	t.Run("a history edited under a parked query discards it and continues from pi's history", func(t *testing.T) {
+		h := newProviderHarness(t, nil)
+		h.script(parksOnTool("cc", "toolu_2"))
+		ask := userMsg("read a")
+		parkedReply := finalOf(t, h.call(context.Background(), "pi-diverge", msgs(ask), readTool))
+		reply := callTool(context.Background(), spawnMcp{h.lastSpawn()}, "read", "toolu_2")
+		waitParked(t, h.liveFor("pi-diverge"), 1)
 
-	t.Run("REBUILD after a rewrite keeps the id and replaces the file", func(t *testing.T) {
-		b, _, agentDir := newTestBridge(t, true)
-		cwd := t.TempDir()
-		seed(t, id1, cwd, nil)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, Cursor: 2, Cwd: cwd, NeedsRebuild: true})
-		res, err := b.syncSharedSession(nil, "pi-1", []map[string]any{user("Only"), say("one"), user("Next")}, nil, cwd, "")
-		if err != nil {
-			t.Fatal(err)
+		// An extension edited the prompt while the tool ran; the result arrives over the new history.
+		h.script(answersPrompt("cc", "continued"))
+		edited := msgs(userMsg("read a (edited)"), parkedReply, toolResultMsg("toolu_2"))
+		continued := finalOf(t, h.call(context.Background(), "pi-diverge", edited, readTool))
+		if replyText(continued) != "continued" || len(h.spawns()) != 2 {
+			t.Fatalf("reply = %v spawns = %d", continued, len(h.spawns()))
 		}
-		if res.Action != ActionRebuild || res.SessionID != id1 {
-			t.Fatalf("got %+v", res)
+		if got := receive(t, reply, "the parked handler"); !strings.Contains(got.Text, "discarded") {
+			t.Fatalf("parked handler = %+v", got)
 		}
-		if st := b.sessionStateFor("pi-1"); st.NeedsRebuild {
-			t.Fatal("rebuild must clear the mark")
+		if got := firstPrompt(t, h.lastSpawn()); !strings.Contains(got, "context was compacted") {
+			t.Fatalf("prompt = %q", got)
 		}
-		data, _ := os.ReadFile(ccsession.SessionPath(ccsession.ClaudeDir(""), cwd, id1))
-		if !strings.Contains(string(data), "one") || strings.Contains(string(data), "Hello.") {
-			t.Fatalf("file not rewritten: %s", data)
-		}
-		if log := readDebugLog(t, agentDir); !strings.Contains(log, "priors=2 preserved\n") {
-			t.Fatalf("log = %s", log)
+		data, err := os.ReadFile(h.sessionFile(h.lastSpawn().opts.Resume, h.lastSpawn().opts.Cwd))
+		if err != nil || !strings.Contains(string(data), "read a (edited)") {
+			t.Fatalf("the fresh query runs over pi's edited history: %v %s", err, data)
 		}
 	})
-
-	t.Run("POST_ABORT_ROTATE takes a fresh id and leaves the old file for the dying writer", func(t *testing.T) {
-		b, _, agentDir := newTestBridge(t, true)
-		cwd := t.TempDir()
-		seed(t, id1, cwd, nil)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, Cursor: 2, Cwd: cwd, NeedsRebuild: true, ForceRotate: true})
-		res, err := b.syncSharedSession(nil, "pi-1", []map[string]any{user("Hi"), say("Hello."), user("Next")}, nil, cwd, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if res.Action != ActionPostAbortRotate || res.SessionID == "" || res.SessionID == id1 {
-			t.Fatalf("got %+v", res)
-		}
-		if _, err := os.Stat(ccsession.SessionPath(ccsession.ClaudeDir(""), cwd, id1)); err != nil {
-			t.Fatalf("the old file must stay (orphan writes land there): %v", err)
-		}
-		if st := b.sessionStateFor("pi-1"); st.SessionID != res.SessionID || st.ForceRotate || st.NeedsRebuild {
-			t.Fatalf("state = %+v", st)
-		}
-		want := "syncResult: path=rebuild sessionId=" + res.SessionID + " priors=2 rotated-post-abort\n"
-		if log := readDebugLog(t, agentDir); !strings.Contains(log, want) {
-			t.Fatalf("log = %s", log)
-		}
-	})
-
-	t.Run("a tool batch counts assistant and results as prior messages", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		cwd := t.TempDir()
-		seed(t, id1, cwd, nil)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, Cursor: 2, Cwd: cwd})
-		call := map[string]any{"role": "assistant", "stopReason": "toolUse", "content": []any{
-			map[string]any{"type": "toolCall", "id": "toolu_1", "name": "read", "arguments": map[string]any{"path": "a"}}}}
-		result := map[string]any{"role": "toolResult", "toolCallId": "toolu_1", "toolName": "read", "isError": false,
-			"content": []any{map[string]any{"type": "text", "text": "file"}}}
-		msgs := []map[string]any{user("Hi"), say("Hello."), user("read a"), call, result, say("done"), user("next")}
-		// Priors = 6, cursor 2: four missed messages, so the file is rebuilt, and the cursor lands on 6.
-		res, err := b.syncSharedSession(nil, "pi-1", msgs, nil, cwd, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if res.Action != ActionRebuild || b.sessionStateFor("pi-1").Cursor != 6 {
-			t.Fatalf("got %+v cursor %d", res, b.sessionStateFor("pi-1").Cursor)
-		}
-		// The same priors again sit exactly at the cursor: reuse, no rebuild.
-		res, err = b.syncSharedSession(nil, "pi-1", msgs, nil, cwd, "")
-		if err != nil || res.Action != ActionReuse || b.sessionStateFor("pi-1").Cursor != 6 {
-			t.Fatalf("got %+v err %v cursor %d", res, err, b.sessionStateFor("pi-1").Cursor)
-		}
-	})
-
-	t.Run("an already-prefixed tool name surfaces as an error, not a panic", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		bad := map[string]any{"role": "assistant", "stopReason": "toolUse", "content": []any{
-			map[string]any{"type": "toolCall", "id": "toolu_1", "name": "mcp__custom-tools__read", "arguments": map[string]any{}}}}
-		_, err := b.syncSharedSession(nil, "pi-1", []map[string]any{user("a"), bad, user("b")}, nil, t.TempDir(), "")
-		if err == nil {
-			t.Fatal("want error")
-		}
-	})
-}
-
-// TestConcurrentSessionsDoNotShareState is Review Focus 5: two goroutines sync
-// distinct pi sessions 100 times; run under -race.
-func TestConcurrentSessionsDoNotShareState(t *testing.T) {
-	b, _, _ := newTestBridge(t, false)
-	var wg sync.WaitGroup
-	for _, pi := range []string{"pi-a", "pi-b"} {
-		cwd := t.TempDir()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var ids []string
-			for i := 0; i < 100; i++ {
-				msgs := []map[string]any{user(pi + " first"), say("ok"), user(fmt.Sprintf("turn %d", i))}
-				res, err := b.syncSharedSession(nil, pi, msgs, nil, cwd, "")
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				ids = append(ids, res.SessionID)
-				if st := b.sessionStateFor(pi); st == nil || st.PiSessionID != pi || st.Cwd != cwd {
-					t.Errorf("%s: state is not its own: %+v", pi, st)
-					return
-				}
-				if i == 50 {
-					b.markRebuildForSession(pi, "session_compact")
-				}
-			}
-			if ids[0] == "" || ids[99] != ids[0] {
-				t.Errorf("%s kept changing session: first %q last %q", pi, ids[0], ids[99])
-			}
-		}()
-	}
-	wg.Wait()
-	a, c := b.sessionStateFor("pi-a"), b.sessionStateFor("pi-b")
-	if a.SessionID == c.SessionID {
-		t.Fatal("sessions share a Claude Code session")
-	}
-}
-
-// A failed verification reaches the user as a warning and the diag log as an entry.
-func TestVerifyWrittenSessionWarnsAndDumps(t *testing.T) {
-	b, _, agentDir := newTestBridge(t, false)
-	host := &recordingHost{}
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	if err := os.WriteFile(path, []byte(`{"sessionId":"s"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	b.verifyWrittenSession(host, path, "s", 2, "/work")
-	if len(host.notices) != 1 || !strings.HasPrefix(host.notices[0], "warning: Session file issue: record count mismatch — expected=2 actual=1") {
-		t.Fatalf("notices = %q", host.notices)
-	}
-	diag, err := os.ReadFile(filepath.Join(agentDir, "claude-bridge-diag.log"))
-	if err != nil || !strings.Contains(string(diag), `"label":"session_verify_fail"`) || !strings.Contains(string(diag), `"cwd":"/work"`) {
-		t.Fatalf("diag log = %s, %v", diag, err)
-	}
-	b.verifyWrittenSession(nil, path, "s", 1, "/work") // healthy: nothing to say, and a nil host is fine
-	if len(host.notices) != 1 {
-		t.Fatalf("a healthy file warned: %q", host.notices)
-	}
-}
-
-// A mark landing between a sync's snapshot and its final store must survive: the
-// rebuilt file reflects the pre-rewrite history.
-func TestRebuildKeepsMarkSetSinceSnapshot(t *testing.T) {
-	rebuilt := SessionState{SessionID: id1, Cursor: 2}
-	t.Run("rewrite mark", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
-		snapshot := b.sessionStateFor("pi-1")
-		b.markRebuildForSession("pi-1", "session_compact")
-		b.storeRebuilt("pi-1", snapshot, rebuilt)
-		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild || st.ForceRotate {
-			t.Fatalf("state = %+v", st)
-		}
-	})
-	t.Run("abort mark", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
-		snapshot := b.sessionStateFor("pi-1")
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true, ForceRotate: true})
-		b.storeRebuilt("pi-1", snapshot, rebuilt)
-		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild || !st.ForceRotate {
-			t.Fatalf("state = %+v", st)
-		}
-	})
-	t.Run("a mark stored without markSeq", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		snapshot := b.sessionStateFor("pi-1") // no mirror yet, as in a first turn
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
-		b.storeRebuilt("pi-1", snapshot, rebuilt)
-		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild {
-			t.Fatalf("the mark was lost: %+v", st)
-		}
-	})
-	t.Run("no mark since", func(t *testing.T) {
-		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true, ForceRotate: true})
-		b.storeRebuilt("pi-1", b.sessionStateFor("pi-1"), rebuilt)
-		if st := b.sessionStateFor("pi-1"); st.NeedsRebuild || st.ForceRotate {
-			t.Fatalf("flags must clear: %+v", st)
-		}
-	})
-}
-
-// Marks racing syncs on one key, and two syncs on the shared "(none)" key, must
-// neither race (-race) nor corrupt the session file.
-func TestSyncsAndMarksOnOneKeySerialise(t *testing.T) {
-	b, _, _ := newTestBridge(t, false)
-	cwd := t.TempDir()
-	msgs := []map[string]any{user("Hi"), say("Hello."), user("Next")}
-	var wg sync.WaitGroup
-	for g := 0; g < 3; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 30; i++ {
-				if _, err := b.syncSharedSession(nil, "", msgs, nil, cwd, ""); err != nil {
-					t.Error(err)
-					return
-				}
-				if g == 0 {
-					b.markRebuildForSession("", "session_compact")
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	st := b.sessionStateFor("")
-	if got := recordTypes(t, st.SessionID, cwd); fmt.Sprint(got) != "[user assistant]" {
-		t.Fatalf("file = %v", got)
-	}
 }

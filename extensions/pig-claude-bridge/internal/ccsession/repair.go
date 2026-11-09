@@ -1,8 +1,26 @@
 package ccsession
 
-import "slices"
+import (
+	"encoding/json"
+	"slices"
+)
 
 // Port of repairWithOrigin (cc-session-io chunk-7JUXR4CP.js:62-121).
+
+// toolResultID is the tool_use_id of a tool_result block, typed or raw.
+func toolResultID(b Block) (string, bool) {
+	switch tr := b.(type) {
+	case ToolResultBlock:
+		return tr.ToolUseID, true
+	case RawBlock:
+		var head struct {
+			ID string `json:"tool_use_id"`
+		}
+		_ = json.Unmarshal(tr, &head)
+		return head.ID, true
+	}
+	return "", false
+}
 
 const (
 	noResultText      = "[no tool result recorded]"
@@ -68,11 +86,11 @@ func RepairWithOrigin(msgs []Message) (repaired []Message, origin []int) {
 		var provided []string
 		var kept []Block
 		for _, b := range input {
-			tr, ok := b.(ToolResultBlock)
+			id, ok := toolResultID(b)
 			if !ok {
 				kept = append(kept, b)
-			} else if slices.Contains(pending, tr.ToolUseID) {
-				provided = append(provided, tr.ToolUseID)
+			} else if slices.Contains(pending, id) {
+				provided = append(provided, id)
 				kept = append(kept, b)
 			}
 		}

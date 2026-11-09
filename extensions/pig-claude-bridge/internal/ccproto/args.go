@@ -66,6 +66,12 @@ type Options struct {
 	// model through ExtraArgs instead (two tokens, as the TypeScript's extraArgs.model); only
 	// the isolated query sets Model.
 	Model, Effort, Resume string
+	// ForkSession and ResumeSessionAt fork Resume at a record uuid into a new session
+	// (the SDK's forkSession and resumeSessionAt); SessionID names a fresh launch's or a
+	// fork's target session (the SDK's sessionId; CC rejects it beside a plain resume).
+	ForkSession     bool
+	ResumeSessionAt string
+	SessionID       string
 	// ThinkingDisabled is the SDK's thinking:{type:"disabled"} (--thinking=disabled): PiG sends no
 	// reasoning level when thinking is off, and Claude Code would otherwise apply its own default.
 	ThinkingDisabled                      bool
@@ -119,6 +125,15 @@ func BuildArgs(o Options) []string {
 	if o.Resume != "" {
 		args = append(args, "--resume="+o.Resume)
 	}
+	if o.ForkSession {
+		args = append(args, "--fork-session")
+	}
+	if o.ResumeSessionAt != "" {
+		args = append(args, "--resume-session-at="+o.ResumeSessionAt)
+	}
+	if o.SessionID != "" {
+		args = append(args, "--session-id="+o.SessionID)
+	}
 	if len(o.AllowedTools) > 0 {
 		args = append(args, "--allowedTools="+strings.Join(o.AllowedTools, ","))
 	}
@@ -168,12 +183,13 @@ func settingsJSON(settings map[string]any) string {
 // BuildEnv returns the child environment: base plus o.Env, minus NODE_OPTIONS, DEBUG, TRACEPARENT and
 // TRACESTATE (and parentSessionVars when CLAUDECODE is set), with the SDK identity variables added when
 // unset, then CCChildEnv, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (the TypeScript sets it for the child
-// only since e93d51d; before, on process.env at load) and PI_CODING_AGENT=true.
+// only since e93d51d; before, on process.env at load) and PI_CODING_AGENT=true. An o.Env entry with an
+// empty value ("NAME=") removes NAME from base instead: pi's provider env can only hold strings, so an
+// empty one is how a caller unsets an exported variable for Claude Code (cc-child.ts ccChildEnv).
 // Later entries win over earlier duplicates in the returned slice (execve semantics for the consumer).
 func BuildEnv(base []string, o Options) []string {
 	strip := map[string]bool{"NODE_OPTIONS": true, "DEBUG": true, "TRACEPARENT": true, "TRACESTATE": true}
-	inherited := append(append([]string{}, base...), o.Env...)
-	if slices.ContainsFunc(inherited, func(kv string) bool {
+	if slices.ContainsFunc(base, func(kv string) bool {
 		k, v, _ := strings.Cut(kv, "=")
 		return k == "CLAUDECODE" && v != ""
 	}) {
@@ -181,6 +197,15 @@ func BuildEnv(base []string, o Options) []string {
 			strip[k] = true
 		}
 	}
+	overrides := make([]string, 0, len(o.Env))
+	for _, kv := range o.Env {
+		if k, v, _ := strings.Cut(kv, "="); v == "" {
+			strip[k] = true
+		} else {
+			overrides = append(overrides, kv)
+		}
+	}
+	inherited := append(append([]string{}, base...), overrides...)
 	env := make([]string, 0, len(inherited)+8)
 	for _, kv := range inherited {
 		if !strip[strings.SplitN(kv, "=", 2)[0]] {

@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"fmt"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -117,15 +116,22 @@ func (b *Bridge) hostSessionID(host Host, event string) string {
 	return id
 }
 
-// OnSessionStart remembers the session's cwd, and drops every mirror when the
-// session is a fresh conversation.
-func (b *Bridge) OnSessionStart(host Host, reason string) {
+// OnSessionStart remembers the session's cwd. Mirrors stay: each is keyed by its own
+// pi session id, so switching sessions erases none of them. A fork or clone starts
+// from its parent's mirror, so its first turn forks the parent's Claude Code session.
+func (b *Bridge) OnSessionStart(host Host, reason, previousSessionFile string) {
 	defer b.recoverHandler("session_start")
 	b.showStatus(host)
-	b.rememberSessionCwd(b.hostSessionID(host, "session_start"), host.Cwd())
-	switch reason {
-	case "new", "resume", "fork":
-		b.clearSessions("session_start:" + reason)
+	id := b.hostSessionID(host, "session_start")
+	b.rememberSessionCwd(id, host.Cwd())
+	b.mu.Lock()
+	n := len(b.sessions)
+	b.mu.Unlock()
+	b.debugf("session_start:%s: retaining %d shared session(s)", reason, n)
+	if reason == "fork" && previousSessionFile != "" && id != "" {
+		if err := b.inheritSessionState(previousSessionFile, id); err != nil {
+			b.debugf("session_start:fork: %v", err)
+		}
 	}
 }
 
@@ -207,18 +213,39 @@ func (b *Bridge) historyRewrittenBy(host Host, event string) {
 	b.forgetSummarySession(id)
 }
 
-// OnSessionShutdown ends a pi session: its cwd, its sync lock and every mirror go,
-// and every Claude Code child this process started is killed, even when the host fails.
+// OnSessionShutdown ends a pi session: its cwd and sync lock go, its parked queries
+// are closed with their progress kept for a later resume (a tool that returns
+// terminate: true ends pi's run with Claude Code still parked on its result, issue
+// #210), and then every Claude Code child this process started is killed (D10),
+// even when the host fails. Mirrors stay; they are keyed per pi session and persisted.
 func (b *Bridge) OnSessionShutdown(host Host) {
 	defer b.recoverHandler("session_shutdown")
 	defer b.killLiveQueries()
 	id := b.hostSessionID(host, "session_shutdown")
 	b.forgetSessionCwd(id)
 	b.mu.Lock()
-	delete(b.syncLocks, sessionKey(id))
+	delete(b.syncLocks, id)
 	b.mu.Unlock()
+	b.closeSessionQueries(id)
 	b.reportLeaks("session_shutdown")
-	b.clearSessions("session_shutdown")
+}
+
+// closeSessionQueries closes every query the shutting-down pi session still holds.
+func (b *Bridge) closeSessionQueries(piSessionID string) {
+	for _, q := range b.liveContexts() {
+		if q.piSessionID != piSessionID {
+			continue
+		}
+		q.mu.Lock()
+		active, pending, ps := q.activeQuery != nil, len(q.pendingToolCalls), q.promptStream != nil
+		q.mu.Unlock()
+		if active {
+			b.debugf("session_shutdown: closing parked query — pendingToolCalls=%d promptStream=%t", pending, ps)
+		} else {
+			b.debugf("WARNING: session_shutdown left a context with no query — pendingToolCalls=%d promptStream=%t", pending, ps)
+		}
+		b.discardRewrittenQuery(q, "Session shut down; this query was closed.")
+	}
 }
 
 // killLiveQueries aborts every live query, then kills every Claude Code child still
@@ -234,20 +261,4 @@ func (b *Bridge) killLiveQueries() {
 		}
 	}
 	ccproto.Shutdown()
-}
-
-// clearSessions drops every mirror: children never emit session_shutdown (only
-// runtime teardown does), so there is no per-entry removal, and a top-level
-// transition takes every mirror with it.
-func (b *Bridge) clearSessions(event string) {
-	b.mu.Lock()
-	n := len(b.sessions)
-	b.sessions = map[string]SessionState{}
-	b.historyRewritten = map[string]struct{}{}
-	b.mu.Unlock()
-	plural := "s"
-	if n == 1 {
-		plural = ""
-	}
-	b.debugf("%s", fmt.Sprintf("%s: clearing %d shared session%s", event, n, plural))
 }

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+Catches up with pi-claude-bridge 0.11.0 (acbe45b). Every behaviour listed here is the TypeScript's unless marked port-only; docs/compatibility.md lists what is deliberately different.
+
+- feat(bridge): session sync compares message content instead of counting messages (pi-claude-bridge #222). An unchanged history reuses the Claude Code session; a rewind, edit, abort, failed turn or restart forks or trims it at the last valid cut and imports only what follows; a full import happens only when the model, the system prompt append or the cwd changed. Live queries record which pi messages Claude Code's file covers and commit that on completion, failure, abort or discard, so prompt cache and earlier thinking survive what used to be a rebuild.
+- feat(bridge): the session pointer is persisted under `<agentDir>/claude-bridge/sessions/` (user-only, atomic), so a restart or `/reload` forks the earlier Claude Code session instead of re-sending the conversation. A `/fork` or clone inherits its parent's pointer. Mirrors survive switching sessions and shutdown.
+- feat(bridge): a parked query is closed, its progress kept, when the same session sends a fresh prompt, when its history was edited under it (a content check before every tool-result delivery), or at `session_shutdown` (pi-claude-bridge #210); tool results route only to their own pi session's query (#111); tool calls take the arguments Claude Code converted (#242).
+- fix(convert): a tool result with no output becomes the placeholder Claude Code substitutes live, `is_error` is written only when true (#227), and a tool result Claude Code already recorded (an oversized output saved to a file, an image) is reused verbatim in a rewrite (#207).
+- fix(provider): Claude Code loads user settings only (`settingSources: ["user"]`), so a repo's `.claude/settings.json` and `settings.local.json` never run their hooks, `apiKeyHelper` or `env` (#198). The project `.pig/claude-bridge.json` is no longer read: a cloned repo could point the bridge at its own Claude Code executable or turn on metered billing.
+- feat(provider): pi's per-request provider env (a credential's `env`, or the caller's) applies to the Claude Code child; an empty value unsets a variable, and `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE` are refused.
+- fix(bridge): the rate-limit notice says when requests are billed to Extra Usage (#201, #213); the non-streaming fallback keeps later blocks of the same message (87f67d1); `bash` runs with a 120 s default timeout under claude-bridge models, applied in the `tool_call` hook so pi's history keeps the arguments Claude Code sent (#203).
+- refactor(convert): the dropped-content counters and the builtin-name path for unserved tools are gone with upstream; the golden conversion is regenerated from upstream at acbe45b. `internal/digest` is pinned to the TypeScript's hashes by tests/fixtures/message-digests.json.
+- docs: AskClaude stays in this package, off by default (upstream moved it to `pi-claude-bridge-askclaude`); `CLAUDE_BRIDGE_TRACE_DIR` is not ported.
+
 ## 0.4.0 - 2026-11-09
 
 - build: the PiG Go SDK pin moves from v0.5.3 to v0.7.0 (PiG 0.7.0); no API the bridge uses changed. Verified against Claude Code 2.1.319 (`ccproto.MinVersion` stays 2.1.310).

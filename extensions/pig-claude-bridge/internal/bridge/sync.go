@@ -1,35 +1,33 @@
 package bridge
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccsession"
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/convert"
+	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/digest"
 )
 
-// Sync outcomes. CLEAN_START means no Claude Code session exists to resume.
-const (
-	ActionReuse           = "REUSE"
-	ActionAppend          = "APPEND"
-	ActionRebuild         = "REBUILD"
-	ActionPostAbortRotate = "POST_ABORT_ROTATE"
-	ActionCleanStart      = "CLEAN_START"
-)
-
-// SyncResult is the outcome of syncSharedSession. SessionID is empty when no
-// session should be resumed.
+// SyncResult is the outcome of syncSharedSession (index.ts SyncResult).
 type SyncResult struct {
-	Action    string
+	// SessionID is the Claude Code session to resume, "" for a fresh launch.
 	SessionID string
-	// PreserveSharedSession tells the completion handler not to replace the mirror
-	// with the ephemeral session a clean start creates.
-	PreserveSharedSession bool
-	Cursor                int
-	Priors                int
+	// TargetSessionID is the session the query writes: SessionID when reused, else
+	// the one this sync minted (a fork's target, a prewritten import, a clean start).
+	TargetSessionID string
+	Created         bool
+	// ForkAt is the uuid to fork SessionID at into TargetSessionID; "" otherwise.
+	ForkAt   string
+	Recorded Recording
+	// State is the identity token of the mirror this sync read, retained until
+	// progress or completion commits this query; nil when the session had none.
+	State *SessionState
+	// Path is the decision, for the debug log and tests: reuse, fork, prefix-write,
+	// rebuild or clean-start.
+	Path string
 }
 
 // turnStart is the index of the first message of the current user turn: the
@@ -42,167 +40,211 @@ func turnStart(messages []map[string]any) int {
 	return i
 }
 
-// syncSharedSession makes the shared session hold every message before the current
-// user turn. It returns the session id to resume, or "" when no resume is needed.
-// host may be nil, in which case verification warnings only reach the logs.
-func (b *Bridge) syncSharedSession(host Host, piSessionID string, messages []map[string]any, custom map[string]string, cwd, modelID string) (SyncResult, error) {
+func rawRecords(records []ccsession.Record) []ccsession.RawRecord {
+	out := make([]ccsession.RawRecord, len(records))
+	for i, r := range records {
+		out[i] = r.Raw
+	}
+	return out
+}
+
+// syncSharedSession compares pi's values with the session's recording, then keeps
+// Claude Code's own records up to the last valid cut: reuse when equal, fork when
+// the cut is the whole prior history, a prefix write when it is shorter, a full
+// import otherwise. promptDigest is the provider's system prompt append; a change
+// takes a full import, the only path on which CC records a new one. host may be
+// nil, in which case verification warnings only reach the logs.
+func (b *Bridge) syncSharedSession(host Host, piSessionID string, messages []map[string]any, custom map[string]string, cwd, modelID, promptDigest string) (SyncResult, error) {
 	all := make([]any, len(messages))
 	for i, m := range messages {
 		all[i] = m
 	}
 	history := convert.NonSystemMessages(all)
 	priors := history[:turnStart(history)]
-	// One sync per key at a time: the file I/O below must not interleave, and the
-	// final store must know which marks landed since this snapshot.
 	unlock := b.lockSync(piSessionID)
 	defer unlock()
-	shared := b.sessionStateFor(piSessionID)
-
-	if shared != nil && !shared.NeedsRebuild && len(priors) >= shared.Cursor {
-		missed := priors[shared.Cursor:]
-		trailingAssistantOnly := len(missed) == 1 && missed[0]["role"] == "assistant"
-		if len(missed) == 0 || trailingAssistantOnly {
-			res := SyncResult{Action: ActionReuse, SessionID: shared.SessionID, Cursor: shared.Cursor, Priors: len(priors)}
-			if trailingAssistantOnly {
-				b.advanceCursor(piSessionID, len(priors), cwd)
-				res.Action, res.Cursor = ActionAppend, len(priors)
-				b.debugf("Case 3: advanced cursor past trailing assistant, resuming session %s, cursor=%d", short(shared.SessionID), len(priors))
-			} else {
-				b.debugf("Case 3: resuming session %s, cursor=%d", short(shared.SessionID), shared.Cursor)
+	state := b.sessionStateFor(piSessionID)
+	before := state
+	priorDigests, err := digest.Messages(priors)
+	if err != nil {
+		return SyncResult{}, fmt.Errorf("sync: %w", err)
+	}
+	compared := Comparison{}
+	if state != nil {
+		compared = CompareHistory(priorDigests, state.Recording)
+	}
+	missingFile := false
+	if state != nil {
+		if _, err := os.Stat(ccsession.SessionPath("", state.Cwd, state.CCSessionID)); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return SyncResult{}, fmt.Errorf("sync: %w", err)
 			}
-			b.debugf("syncResult: path=reuse sessionId=%s cursor=%d", shared.SessionID, res.Cursor)
-			return res, nil
+			missingFile = true
+			b.debugf("sync: missing transcript %s in recorded cwd=%s; importing pi history", state.CCSessionID, state.Cwd)
+			b.setSessionStateFor(piSessionID, nil)
+			if err := DeleteSessionState(b.deps.AgentDir, piSessionID); err != nil {
+				b.debugf("sync: delete persisted state: %v", err)
+			}
+			state = nil
 		}
 	}
-	// A shorter context cannot continue the cached session: start clean and keep the mirror.
-	if shared != nil && !shared.NeedsRebuild && len(priors) < shared.Cursor {
-		b.debugf("Case 1 synthetic: clean start for shorter context, preserving shared session %s, cursor=%d", short(shared.SessionID), shared.Cursor)
-		b.debugf("syncResult: path=clean-start preserve-shared sessionId=%s cursor=%d", shared.SessionID, shared.Cursor)
-		return SyncResult{Action: ActionCleanStart, PreserveSharedSession: true, Cursor: shared.Cursor, Priors: len(priors)}, nil
+	cwdChanged := state != nil && safeRealpath(state.Cwd) != safeRealpath(cwd)
+	promptChanged := state != nil && state.PromptDigest != promptDigest
+	if promptChanged {
+		b.debugf("sync: system prompt append changed; importing pi history piSession=%s", piSessionID)
 	}
-	if len(priors) == 0 {
-		b.debugf("Case 1: clean start, %d total messages", len(history))
-		b.debugf("syncResult: path=clean-start")
-		return SyncResult{Action: ActionCleanStart}, nil
+	var row int
+	switch {
+	case piSessionID == "":
+		row = 0
+	case state == nil && len(priors) > 0:
+		row = 2
+	case state == nil:
+		row = 1
+	case state.Model != modelID || promptChanged:
+		row = 3
+	case cwdChanged:
+		row = 5
+	case compared.Equal && !state.DirtyTail:
+		row = 4
+	case compared.CutCount == 0:
+		row = 5
+	case compared.CutCount == len(priors):
+		row = 6
+	default:
+		row = 7
 	}
-
-	var previousID string
-	previousCursor := 0
-	if shared != nil {
-		previousID, previousCursor = shared.SessionID, shared.Cursor
+	reason := "history-difference"
+	switch {
+	case piSessionID == "":
+		reason = "unattributed-history"
+	case missingFile:
+		reason = "missing-transcript"
+	case state == nil:
+		reason = "no-state"
+	case state.Model != modelID:
+		reason = "model-changed"
+	case promptChanged:
+		reason = "prompt-changed"
+	case cwdChanged:
+		reason = "cwd-changed"
+	case row == 4:
+		reason = "equal-digests"
+	case state.DirtyTail && compared.Equal:
+		reason = "dirty-tail"
 	}
-	preserveID := previousID != "" && !shared.ForceRotate
-	var carried []convert.CarriedAttachment
-	if previousID != "" {
-		// Before Delete: it wipes the file the attachments live in.
-		carried = b.readCarriedAttachments(previousID, cwd)
-	}
-	if preserveID {
-		if err := ccsession.Delete(previousID, cwd, ""); err != nil {
-			return SyncResult{}, fmt.Errorf("sync: delete previous session %s: %w", short(previousID), err)
+	decision := func(path, after string) {
+		from := "none"
+		if before != nil {
+			from = before.CCSessionID
 		}
+		b.debugf("syncResult: path=%s sessionId=%s from=%s priors=%d commonPrefix=%d cutCount=%d row=%d reason=%s piSession=%s",
+			path, after, from, len(priors), compared.CommonPrefix, compared.CutCount, row, reason, orNone(piSessionID))
 	}
-	opts := ccsession.Options{ProjectPath: cwd, Model: modelID}
-	if preserveID {
-		opts.SessionID = previousID
+	if row == 4 {
+		decision("reuse", state.CCSessionID)
+		return SyncResult{SessionID: state.CCSessionID, TargetSessionID: state.CCSessionID, Recorded: state.Recording.Copy(), State: state, Path: "reuse"}, nil
 	}
-	session, err := ccsession.Create(opts)
+	session, err := ccsession.Create(ccsession.Options{ProjectPath: cwd, Model: modelID})
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("sync: create session: %w", err)
 	}
-	if err := b.convertAndImportMessages(session, priors, custom, carried); err != nil {
-		return SyncResult{}, err
+	target := session.ID()
+	var recorded Recording
+	records := 0
+	path := "rebuild"
+	if row == 6 || row == 7 {
+		transcript, err := ccsession.ReadTranscript(state.CCSessionID, state.Cwd, "")
+		if err != nil {
+			return SyncResult{}, fmt.Errorf("sync: %w", err)
+		}
+		cut, err := ResolveRecordingCut(transcript, state.Recording, compared.CutCount)
+		if err != nil {
+			return SyncResult{}, fmt.Errorf("sync: %w", err)
+		}
+		recorded = state.Recording.Prefix(compared.CutCount)
+		if row == 6 {
+			decision("fork", target)
+			return SyncResult{SessionID: state.CCSessionID, TargetSessionID: target, Created: true, ForkAt: cut.UUID, Recorded: recorded, State: state, Path: "fork"}, nil
+		}
+		rest := priors[compared.CutCount:]
+		replaced := transcript[cut.Index+1:]
+		results, err := RecordedToolResults(replaced, state.Digests, rest)
+		if err != nil {
+			return SyncResult{}, fmt.Errorf("sync: %w", err)
+		}
+		suffix, err := ImportHistory(session, rest, custom, convert.CollectCarriedAttachments(rawRecords(replaced)), results)
+		if err != nil {
+			return SyncResult{}, fmt.Errorf("sync: %w", err)
+		}
+		recorded = Recording{Digests: append(recorded.Digests, suffix.Digests...), UUIDs: append(recorded.UUIDs, suffix.UUIDs...), Cuttable: append(recorded.Cuttable, suffix.Cuttable...)}
+		if records, err = ccsession.SavePrefixSession(session, transcript[:cut.Index+1], cut.UUID); err != nil {
+			return SyncResult{}, fmt.Errorf("sync: %w", err)
+		}
+		path = "prefix-write"
+	} else {
+		// Nothing is kept, but the old transcript's @file expansions and tool results
+		// still belong to messages pi kept unchanged.
+		var transcript []ccsession.Record
+		var digests []string
+		if state != nil {
+			if transcript, err = ccsession.ReadTranscript(state.CCSessionID, state.Cwd, ""); err != nil {
+				return SyncResult{}, fmt.Errorf("sync: %w", err)
+			}
+			digests = state.Digests
+		}
+		results, err := RecordedToolResults(transcript, digests, priors)
+		if err != nil {
+			return SyncResult{}, fmt.Errorf("sync: %w", err)
+		}
+		if recorded, err = ImportHistory(session, priors, custom, convert.CollectCarriedAttachments(rawRecords(transcript)), results); err != nil {
+			return SyncResult{}, fmt.Errorf("sync: %w", err)
+		}
+		if err := session.Save(); err != nil {
+			return SyncResult{}, fmt.Errorf("sync: save session %s: %w", short(target), err)
+		}
+		records = len(session.Records())
+		if records == 0 {
+			path = "clean-start"
+		}
+	}
+	if records > 0 {
+		b.verifyWrittenSession(host, session.Path(), target, records, cwd)
+	}
+	decision(path, target)
+	b.debugSessionPaths(short(target), cwd, session.Path())
+	resume := ""
+	if records > 0 {
+		resume = target
+	}
+	return SyncResult{SessionID: resume, TargetSessionID: target, Created: true, Recorded: recorded, State: state, Path: path}, nil
+}
+
+// importForAskClaude writes pi's prior history (everything before the trailing user
+// turn) into a fresh Claude Code session for AskClaude's shared mode and returns its
+// id, "" when there is nothing to import. The provider's mirror is not touched (D8).
+func (b *Bridge) importForAskClaude(host Host, messages []map[string]any, cwd, modelID string) (string, error) {
+	all := make([]any, len(messages))
+	for i, m := range messages {
+		all[i] = m
+	}
+	history := convert.NonSystemMessages(all)
+	priors := history[:turnStart(history)]
+	if len(priors) == 0 {
+		return "", nil
+	}
+	session, err := ccsession.Create(ccsession.Options{ProjectPath: cwd, Model: modelID})
+	if err != nil {
+		return "", fmt.Errorf("askclaude: create session: %w", err)
+	}
+	if _, err := ImportHistory(session, priors, nil, nil, nil); err != nil {
+		return "", fmt.Errorf("askclaude: %w", err)
 	}
 	if err := session.Save(); err != nil {
-		return SyncResult{}, fmt.Errorf("sync: save session %s: %w", short(session.ID()), err)
+		return "", fmt.Errorf("askclaude: save session %s: %w", short(session.ID()), err)
 	}
-	// Records, not messages: carried attachments are records too.
 	b.verifyWrittenSession(host, session.Path(), session.ID(), len(session.Records()), cwd)
-	b.storeRebuilt(piSessionID, shared, SessionState{SessionID: session.ID(), Cursor: len(priors), Cwd: cwd, PiSessionID: piSessionID})
-
-	id, n := short(session.ID()), len(session.Records())
-	res := SyncResult{Action: ActionRebuild, SessionID: session.ID(), Cursor: len(priors), Priors: len(priors)}
-	flavor := "preserved"
-	switch {
-	case previousID == "":
-		flavor = "first"
-		b.debugf("Case 2: first turn with %d prior messages → session %s, %d records", len(priors), id, n)
-	case preserveID:
-		b.debugf("Case 4: %d missed messages, %d total → rewrote session %s (same id), %d records", len(priors)-previousCursor, len(priors), id, n)
-	default:
-		flavor = "rotated-post-abort"
-		res.Action = ActionPostAbortRotate
-		b.debugf("Case 4 post-abort: %d total → new session %s (was %s, rotated to avoid race with orphan writer), %d records", len(priors), id, short(previousID), n)
-	}
-	b.debugSessionPaths(id, cwd, session.Path())
-	b.debugf("syncResult: path=rebuild sessionId=%s priors=%d %s", session.ID(), len(priors), flavor)
-	return res, nil
-}
-
-// readCarriedAttachments reads Claude Code's @file expansions from the session
-// about to be replaced. A killed subprocess may have left a truncated last line;
-// carrying none is the pre-existing behaviour, so a failure is logged, not raised.
-func (b *Bridge) readCarriedAttachments(sessionID, cwd string) []convert.CarriedAttachment {
-	previous, err := ccsession.Open(sessionID, cwd, "")
-	if err != nil {
-		b.debugf("WARNING: could not read attachments from session %s: %v", short(sessionID), err)
-		return nil
-	}
-	return convert.CollectCarriedAttachments(previous.Records())
-}
-
-// convertAndImportMessages converts pi messages and writes them into session.
-func (b *Bridge) convertAndImportMessages(session *ccsession.Session, messages []map[string]any, custom map[string]string, carried []convert.CarriedAttachment) error {
-	anthropic, sanitized, dropped, err := convert.ConvertPiMessages(messages, custom)
-	if err != nil {
-		return fmt.Errorf("convert pi messages: %w", err)
-	}
-	b.debugf("convertAndImportMessages: %d pi msgs → %d anthropic msgs", len(messages), len(anthropic))
-	var parts []string
-	if dropped.Thinking > 0 {
-		providers := append([]string(nil), dropped.Providers...)
-		sort.Strings(providers)
-		parts = append(parts, fmt.Sprintf("%d thinking (%s)", dropped.Thinking, strings.Join(providers, ", ")))
-	}
-	if dropped.AbortedTurns > 0 {
-		parts = append(parts, fmt.Sprintf("%d aborted turn(s)", dropped.AbortedTurns))
-	}
-	types := make([]string, 0, len(dropped.Other))
-	for t := range dropped.Other {
-		types = append(types, t)
-	}
-	sort.Strings(types)
-	for _, t := range types {
-		parts = append(parts, fmt.Sprintf("%d %s", dropped.Other[t], t))
-	}
-	if len(parts) > 0 {
-		b.debugf("convertAndImportMessages: dropped %s", strings.Join(parts, ", "))
-	}
-	if len(sanitized) > 0 {
-		b.debugf("convertAndImportMessages: sanitized %d tool IDs", len(sanitized))
-	}
-	repaired := ccsession.RepairToolPairing(anthropic)
-	if len(repaired) != len(anthropic) {
-		b.debugf("convertAndImportMessages: repairToolPairing %d → %d msgs", len(anthropic), len(repaired))
-	}
-	var attachments []ccsession.ImportAttachment
-	if len(carried) > 0 {
-		var skipped []string
-		attachments, skipped = convert.PlaceCarriedAttachments(carried, repaired)
-		if len(skipped) > 0 {
-			b.debugf("convertAndImportMessages: dropped %d carried attachment(s): %s", len(skipped), strings.Join(skipped, "; "))
-		}
-		if len(attachments) > 0 {
-			b.debugf("convertAndImportMessages: carrying %d attachment(s) across the rebuild", len(attachments))
-		}
-	}
-	if len(repaired) == 0 {
-		return nil
-	}
-	if err := session.ImportMessages(repaired, attachments); err != nil {
-		return fmt.Errorf("import messages: %w", err)
-	}
-	return nil
+	return session.ID(), nil
 }
 
 // verifyWrittenSession sanity-checks the file just written. It warns instead of
