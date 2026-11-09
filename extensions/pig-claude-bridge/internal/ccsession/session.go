@@ -63,6 +63,14 @@ func (s *Session) ID() string { return s.sessionID }
 // Path returns the JSONL file path.
 func (s *Session) Path() string { return s.path }
 
+// LastUUID is the uuid of the record last added, "" when there is none.
+func (s *Session) LastUUID() string {
+	if s.lastUUID == nil {
+		return ""
+	}
+	return *s.lastUUID
+}
+
 // Records returns saved records followed by pending ones.
 func (s *Session) Records() []json.RawMessage {
 	out := make([]json.RawMessage, 0, len(s.records)+len(s.pending))
