@@ -66,8 +66,11 @@ type spawn struct {
 	opts     ccproto.Options
 	handlers ccproto.Handlers
 	client   *fakeClient
-	// records are the transcript records the fake has written (see recordTranscript).
-	records []fakeRecord
+	// records are the transcript records the fake has written (see recordTranscript);
+	// prefix is what the bridge had written to the file before the fake started.
+	records    []fakeRecord
+	prefix     []byte
+	prefixRead bool
 }
 
 // recordTranscript keeps the session records Claude Code would write for what the fake
@@ -84,6 +87,11 @@ func (h *providerHarness) recordTranscript(s *spawn, typ, uuid string, message a
 	path := ccsession.SessionPath("", s.opts.Cwd, id)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if !s.prefixRead {
+		// A session the bridge prewrote (an import, a prefix write) is the file's prefix.
+		s.prefix, _ = os.ReadFile(path)
+		s.prefixRead = true
+	}
 	rec := fakeRecord{typ: typ, uuid: uuid, message: message, stdin: fromStdin}
 	at := len(s.records)
 	if fromStdin {
@@ -95,8 +103,11 @@ func (h *providerHarness) recordTranscript(s *spawn, typ, uuid string, message a
 		}
 	}
 	s.records = append(s.records[:at], append([]fakeRecord{rec}, s.records[at:]...)...)
-	var out []byte
+	out := append([]byte{}, s.prefix...)
 	var parent any
+	if last := lastRecordUUID(s.prefix); last != "" {
+		parent = last
+	}
 	for _, r := range s.records {
 		line, _ := json.Marshal(map[string]any{"type": r.typ, "uuid": r.uuid, "parentUuid": parent, "sessionId": id, "message": r.message})
 		out = append(append(out, line...), '\n')
@@ -110,6 +121,20 @@ type fakeRecord struct {
 	typ, uuid string
 	message   any
 	stdin     bool
+}
+
+// lastRecordUUID is the uuid of the last record in a JSONL prefix, "" when none.
+func lastRecordUUID(prefix []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(prefix)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var head struct {
+			UUID string `json:"uuid"`
+		}
+		if json.Unmarshal([]byte(lines[i]), &head) == nil && head.UUID != "" {
+			return head.UUID
+		}
+	}
+	return ""
 }
 
 // toolResultEcho is the user frame Claude Code echoes once a tool result reached it.
