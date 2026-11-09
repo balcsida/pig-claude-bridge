@@ -14,7 +14,7 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 | cc-session-io | 0.4.1 (MIT), the subset the bridge imports (`addToolResultBlocks` as `AddToolResultBlocks`; the 0.4.1 timestamp stamping is approximated by the port's monotonic clock) |
 | Pi compatibility surface | pi 1.4.0 (the Pi that PiG 0.5.3 tracks) |
 | `@modelcontextprotocol/sdk` | 1.31.0 (the TypeScript declares `^1.29.0`), only as the reference for the JSON-RPC responses the in-process MCP server produces |
-| Model catalog | `@earendil-works/pi-ai` 1.2.0, generated into `internal/models/catalog_gen.go` |
+| Model catalog | `@earendil-works/pi-ai` 1.5.0, generated into `internal/models/catalog_gen.go` |
 
 ## Principal differences (D1 to D7)
 
@@ -26,7 +26,7 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 
 **D4. Subagent mark sponsorship is not ported.** TypeScript: `sponsorMarkRebuildForSession` lets a subagent hand a rebuild mark to the module instance that serves the session, because several module instances share one process. Port: PiG subagents are separate processes, so there is nothing to sponsor; the function has no counterpart. The matching test, `unit-session-cwd` "shares the store across module instances", has no Go counterpart either.
 
-**D5. The model list is a static catalog registered in the factory.** TypeScript: the list comes from pi-ai's Anthropic catalog at run time and follows package updates. Port: `scripts/dev/gen-catalog.mjs` generates `internal/models/catalog_gen.go` from `@earendil-works/pi-ai` 1.2.0 and the provider is registered when the extension loads, with nothing registered at `session_start`. Reason: spike S1 showed that registration from `session_start` is too late for `defaultProvider`/`defaultModel` resolution at startup, so the catalog must be known in the factory. A new Claude model needs a regenerated catalog (see [../UPSTREAM.md](../UPSTREAM.md)).
+**D5. The model list is a static catalog registered in the factory.** TypeScript: the list comes from pi-ai's Anthropic catalog at run time and follows package updates. Port: `scripts/dev/gen-catalog.mjs` generates `internal/models/catalog_gen.go` from `@earendil-works/pi-ai` 1.5.0 and the provider is registered when the extension loads, with nothing registered at `session_start`. Reason: spike S1 showed that registration from `session_start` is too late for `defaultProvider`/`defaultModel` resolution at startup, so the catalog must be known in the factory. A new Claude model needs a regenerated catalog (see [../UPSTREAM.md](../UPSTREAM.md)).
 
 **D6. AskClaude renders as lines.** TypeScript: `askclaude-ui.ts` builds pi-tui components (colour, "(to expand)" affordance). Port: PiG's `ToolDefinition.RenderCall`/`RenderResult` return lines, so the action summary is plain lines without colour, with "… (to expand)" as text, and truncation counts runes.
 

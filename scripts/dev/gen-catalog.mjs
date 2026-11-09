@@ -59,6 +59,7 @@ func Catalog() []map[string]any {
 		if err := json.Unmarshal([]byte(catalogJSON), &catalogEntries); err != nil {
 			panic("models: embedded catalog is invalid: " + err.Error())
 		}
+		catalogEntries = append(catalogEntries, pendingEntries()...)
 	})
 	return catalogEntries
 }

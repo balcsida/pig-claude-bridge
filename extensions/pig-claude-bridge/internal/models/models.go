@@ -44,8 +44,10 @@ var familyOrder = []string{"fable", "opus", "sonnet", "haiku"}
 // exception unrelated to long context: fable-5 is not included with a Pro
 // account without Extra Usage.
 var measuredOneM = map[string]bool{
-	"claude-fable-5":    true,
-	"claude-fable-5-1":  true,
+	"claude-fable-5":   true,
+	"claude-fable-5-1": true,
+	"claude-fable-5-2": true, // native_1m in Claude Code 2.1.321's catalog
+
 	"claude-opus-5-5":   true,
 	"claude-opus-5":     true,
 	"claude-opus-4-8":   true,

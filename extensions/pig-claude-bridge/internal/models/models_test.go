@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"reflect"
 	"slices"
 	"strings"
@@ -107,7 +108,7 @@ func TestModelsProjection(t *testing.T) {
 
 	t.Run("pins the order of the generated catalog", func(t *testing.T) {
 		want := []string{
-			"claude-fable-5-1", "claude-fable-5",
+			"claude-fable-5-2", "claude-fable-5-1", "claude-fable-5",
 			"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
 			"claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5",
 			"claude-haiku-5-5", "claude-haiku-4-5",
@@ -213,7 +214,7 @@ func TestResolveModel(t *testing.T) {
 
 func TestClaudeCodeRuntimePolicy(t *testing.T) {
 	t.Run("measured-1M ids send [1m] on every plan", func(t *testing.T) {
-		for _, id := range []string{"claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"} {
+		for _, id := range []string{"claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"} {
 			requireRuntime(t, id, pro, RuntimeModel{id + "[1m]", 1000000})
 		}
 	})
@@ -341,9 +342,21 @@ func TestOpus55RequestsOneMOnPro(t *testing.T) {
 	})
 }
 
+func TestPendingEntriesLeaveWithTheCatalog(t *testing.T) {
+	var generated []map[string]any
+	if err := json.Unmarshal([]byte(catalogJSON), &generated); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pendingEntries() {
+		if find(generated, p["id"].(string)) != nil {
+			t.Errorf("%s ships %s: drop it from pending.go", CatalogSource, p["id"])
+		}
+	}
+}
+
 func TestCatalogContainsCurrentModels(t *testing.T) {
 	catalog := Catalog()
-	for _, id := range []string{"claude-opus-5-5", "claude-haiku-4-5", "claude-fable-5-1"} {
+	for _, id := range []string{"claude-opus-5-5", "claude-haiku-4-5", "claude-fable-5-1", "claude-fable-5-2"} {
 		if find(catalog, id) == nil {
 			t.Errorf("catalog from %s lacks %s", CatalogSource, id)
 		}
