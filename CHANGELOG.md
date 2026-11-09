@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-11-09
+
 Catches up with pi-claude-bridge 0.11.0 (acbe45b). Every behaviour listed here is the TypeScript's unless marked port-only; docs/compatibility.md lists what is deliberately different.
 
 - feat(bridge): session sync compares message content instead of counting messages (pi-claude-bridge #222). An unchanged history reuses the Claude Code session; a rewind, edit, abort, failed turn or restart forks or trims it at the last valid cut and imports only what follows; a full import happens only when the model, the system prompt append or the cwd changed. Live queries record which pi messages Claude Code's file covers and commit that on completion, failure, abort or discard, so prompt cache and earlier thinking survive what used to be a rebuild.
