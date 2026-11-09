@@ -6,11 +6,11 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 
 | what | pin |
 |---|---|
-| PiG | 0.5.3 (`pig 0.5.3+1.4.0.74f46864`) |
-| PiG Go SDK | `github.com/MichaelKinsy/PiG/extensions/sdk` v0.5.3, Go 1.26 floor |
-| Claude Code | 2.1.310 (the port warns when the binary is older) |
+| PiG | 0.7.0 (`pig 0.7.0+1.5.0`) |
+| PiG Go SDK | `github.com/MichaelKinsy/PiG/extensions/sdk` v0.7.0, Go 1.26 floor |
+| Claude Code | 2.1.310 minimum (the port warns when the binary is older); verified against 2.1.319 |
 | Agent SDK protocol | `@anthropic-ai/claude-agent-sdk` 0.3.310 (Claude Code 2.1.310); [reference](reference/agent-sdk-protocol-0.3.310.md). 0.3.308 to 0.3.310 changes nothing on the wire that the bridge uses; the one new control subtype, survey feedback, is never sent |
-| pi-claude-bridge | `6aa276a`, https://github.com/elidickinson/pi-claude-bridge |
+| pi-claude-bridge | `6aa276a`, https://github.com/elidickinson/pi-claude-bridge, plus the later commits listed in [../UPSTREAM.md](../UPSTREAM.md) (see "Ported after 6aa276a" below) |
 | cc-session-io | 0.4.0 (MIT) |
 | Pi compatibility surface | pi 1.4.0 (the Pi that PiG 0.5.3 tracks) |
 | `@modelcontextprotocol/sdk` | 1.31.0 (the TypeScript declares `^1.29.0`), only as the reference for the JSON-RPC responses the in-process MCP server produces |
@@ -126,6 +126,19 @@ What this port is pinned to, and every place where it differs from the TypeScrip
 - `int-attachment-rebuild` and `int-parallel-tool-results` are not RPC tests; their bodies are `-tags live` tests in `internal/ccproto` and `tests/live` runs them.
 - The alternative provider for the AskClaude, image and session-resume tests must come from `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER`, `CLAUDE_BRIDGE_TESTING_ALT_MODEL` and that provider's API-key variable, because every live run uses a fresh `PIG_HOME`/`PIG_CODING_AGENT_DIR` (the TypeScript suite used the real agent dir). Without them those checks skip.
 - The deadlock-check log pattern, the shutdown test (a third case for the stdin close) and the subagent test (our own agent definition, run through `@tintinweb/pi-subagents`) are adapted as listed in [verification.md](verification.md).
+
+## Ported after 6aa276a
+
+Upstream pi-claude-bridge moved on to 0.11.0 (acbe45b, 100 commits) after the pin. These were ported on their own, each with the TypeScript commit; the rest is listed below.
+
+- **Child environment (f502f5d, 2edde93).** `CLAUDE_CODE_SILENT_TURN_REMINDER=0`, `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=16384` and `CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1` join `CCChildEnv`. The argv snapshot predates them, so `TestArgvMatchesNodeSdkSnapshot` sets them aside and `TestBuildEnv` pins their values.
+- **Parent-session markers (e93d51d, #198).** When `CLAUDECODE` is set in PiG's environment, the parent Claude Code session's markers are dropped from the child env. The TypeScript also moved `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` off its own `process.env`; the port never set it there.
+- **Default output style (5c4a268, #220).** The provider's `--settings` carries `outputStyle: "default"`. Pinned live by `TestOutputStyleDefaultOverridesAUserLevelOutputStyle`.
+- **Thinking off (0b096a8, #152).** No reasoning level means `--thinking=disabled` on the provider and isolated paths, for reasoning models whose `thinkingLevelMap` does not mark `off` as `null`.
+
+Port-only, with no TypeScript counterpart: **`CLAUDE_CODE_DISABLE_FEATURE_FLAGS=1`** in `CCChildEnv`. In Claude Code 2.1.319 feature-flag evaluation (`Ph()`) requires both no disable variable and telemetry on, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` counts as telemetry off, so the TypeScript already runs with flags off; the explicit variable also keeps the disk cache closed should `CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF` be exported, and `TestDisableFeatureFlagsTurnsFlagEvaluationOff` pins the behaviour.
+
+Not ported from 0.10.0 and 0.11.0: the content-digest session sync (#222: forks and trims instead of rebuilds, atomic session state, `/fork` and clone continuing the parent's Claude Code session), `CLAUDE_BRIDGE_TRACE_DIR`, provider `env` from `auth.json`, the Extra Usage billing notice, the empty-tool-result placeholder (#227), Claude Code's normalised tool args (#242), the `settingSources` change that stops loading a repo's `.claude/settings*.json` (#198), the AskClaude split into its own package, and the removal of the `provider.plan` notice (the port detects the plan instead). D1 to D7 above still hold.
 
 ## Pi-only tests that are not ported
 

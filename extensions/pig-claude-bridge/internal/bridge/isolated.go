@@ -100,14 +100,15 @@ func (b *Bridge) runIsolatedSummary(ctx context.Context, host Host, model, piCon
 	cwd := b.sessionCwdFor(owner)
 	cliModel := models.ClaudeCodeModelID(str(model["id"]), b.longContext)
 	effort := effortForReasoning(model, options["reasoning"])
-	b.debugf("compact summary: spawn model=%s registeredModel=%v effort=%s promptLen=%d", cliModel, model["id"], orDefault(effort), len([]rune(promptText)))
+	thinkingOff := thinkingDisabledForReasoning(model, options["reasoning"])
+	b.debugf("compact summary: spawn model=%s registeredModel=%v effort=%s thinkingDisabled=%t promptLen=%d", cliModel, model["id"], orDefault(effort), thinkingOff, len([]rune(promptText)))
 
 	if tools == nil {
 		tools = []string{}
 	}
 	debugFile, onStderr := b.cliDebugOptions(tag)
 	opts := ccproto.Options{
-		Executable: exe, Cwd: cwd, Model: cliModel, Effort: effort, MaxTurns: 1,
+		Executable: exe, Cwd: cwd, Model: cliModel, Effort: effort, ThinkingDisabled: thinkingOff, MaxTurns: 1,
 		Tools: tools, ToolsSet: true, AllowedTools: allowedTools,
 		SettingSourcesSet: true, Skills: []string{},
 		SystemPrompt: str(piContext["systemPrompt"]), SystemPromptSet: true,
