@@ -12,11 +12,44 @@ import (
 // sdkVersion is the Node Agent SDK version whose behaviour is mirrored.
 const sdkVersion = "0.3.310"
 
-// CCChildEnv is applied to every Claude Code child (index.ts CC_CHILD_ENV).
+// CCChildEnv is applied to every Claude Code child (index.ts CC_CHILD_ENV, plus the entries
+// pi-claude-bridge added in f502f5d and 2edde93, and CLAUDE_CODE_DISABLE_FEATURE_FLAGS, which is this port's own).
 var CCChildEnv = map[string]string{
 	"ENABLE_CLAUDEAI_MCP_SERVERS": "0",
 	"DISABLE_AUTO_COMPACT":        "1",
 	"CLAUDE_CODE_ELEGANT_MEADOW":  "0",
+	// On Opus 5.5, Fable 5.1, Mythos 5.1 and Sonnet 5.5, Claude Code adds "The user hasn't heard from
+	// you in a while..." after 5 assistant messages with no visible text. PiG decides what the model is
+	// told; the message is not in PiG's history and the user never sees it.
+	"CLAUDE_CODE_SILENT_TURN_REMINDER": "0",
+	// Claude Code cuts MCP tool descriptions mid-sentence at 4096 chars; 16384 is its own larger limit.
+	"CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH": "16384",
+	// A resumed session that ends at a tool result reads to Claude Code as an interrupted turn, and behind
+	// a server flag it inserts a "Continue from where you left off." user message ahead of PiG's prompt.
+	// PiG supplies every prompt, so every turn counts as too old to resume.
+	"CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS": "1",
+	// No GrowthBook feature flags or experiments (tengu_*): every flag takes its built-in default, and the
+	// cached assignments in ~/.claude.json are not read either. CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+	// already implies this in 2.1.319 (flag evaluation is off whenever telemetry is); the explicit
+	// variable pins it. Pinned by TestDisableFeatureFlagsTurnsFlagEvaluationOff.
+	"CLAUDE_CODE_DISABLE_FEATURE_FLAGS": "1",
+}
+
+// EnvAddedAfterSnapshot lists the CCChildEnv keys that testdata/sdk-argv-snapshot.json (recorded at
+// pi-claude-bridge 6aa276a) does not have: added upstream later (f502f5d, 2edde93) or by this port
+// (CLAUDE_CODE_DISABLE_FEATURE_FLAGS). Snapshot tests set them aside; TestBuildEnv pins their values.
+var EnvAddedAfterSnapshot = []string{"CLAUDE_CODE_SILENT_TURN_REMINDER", "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH",
+	"CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", "CLAUDE_CODE_DISABLE_FEATURE_FLAGS"}
+
+// parentSessionVars are set by Claude Code on its own child processes, or exported by that parent. When PiG
+// runs inside a Claude Code session they describe that session, not ours: the SDK stamps its own entrypoint
+// and version only when they are unset, and Claude Code's Bash tool runs CLAUDE_ENV_FILE's script.
+// AI_AGENT is left alone. Dropped only when CLAUDECODE says PiG was started from inside Claude Code (index.ts e93d51d).
+var parentSessionVars = []string{
+	"CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED",
+	"CLAUDE_PID", "CLAUDE_EFFORT", "TRACEPARENT", "CLAUDE_CODE_INVOKED_SKILLS", "CLAUDE_ENV_FILE",
+	"CLAUDE_CODE_ENTRYPOINT", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_EXECPATH",
+	"CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
 }
 
 // ExtraArg is one extraArgs entry; a nil Value emits the bare flag.
@@ -32,7 +65,10 @@ type Options struct {
 	// Model is the SDK's model option (--model=<id>). The provider and AskClaude pass their
 	// model through ExtraArgs instead (two tokens, as the TypeScript's extraArgs.model); only
 	// the isolated query sets Model.
-	Model, Effort, Resume                 string
+	Model, Effort, Resume string
+	// ThinkingDisabled is the SDK's thinking:{type:"disabled"} (--thinking=disabled): PiG sends no
+	// reasoning level when thinking is off, and Claude Code would otherwise apply its own default.
+	ThinkingDisabled                      bool
 	MaxTurns                              int
 	StrictMcpConfig, NoSessionPersistence bool
 	IncludePartialMessages                bool
@@ -65,6 +101,9 @@ func sdkOption(key, value string) []string {
 // last as two-token pairs (extraArgs first, settings after). SDK MCP servers and the system prompt never appear on argv.
 func BuildArgs(o Options) []string {
 	args := []string{"--output-format", "stream-json", "--verbose", "--input-format", "stream-json"}
+	if o.ThinkingDisabled {
+		args = append(args, "--thinking=disabled")
+	}
 	if o.Effort != "" {
 		args = append(args, "--effort="+o.Effort)
 	}
@@ -127,13 +166,23 @@ func settingsJSON(settings map[string]any) string {
 }
 
 // BuildEnv returns the child environment: base plus o.Env, minus NODE_OPTIONS, DEBUG, TRACEPARENT and
-// TRACESTATE, with the SDK identity variables added when unset, then CCChildEnv,
-// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (index.ts sets it on process.env at load) and PI_CODING_AGENT=true.
+// TRACESTATE (and parentSessionVars when CLAUDECODE is set), with the SDK identity variables added when
+// unset, then CCChildEnv, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 (the TypeScript sets it for the child
+// only since e93d51d; before, on process.env at load) and PI_CODING_AGENT=true.
 // Later entries win over earlier duplicates in the returned slice (execve semantics for the consumer).
 func BuildEnv(base []string, o Options) []string {
 	strip := map[string]bool{"NODE_OPTIONS": true, "DEBUG": true, "TRACEPARENT": true, "TRACESTATE": true}
-	env := make([]string, 0, len(base)+len(o.Env)+8)
-	for _, kv := range append(append([]string{}, base...), o.Env...) {
+	inherited := append(append([]string{}, base...), o.Env...)
+	if slices.ContainsFunc(inherited, func(kv string) bool {
+		k, v, _ := strings.Cut(kv, "=")
+		return k == "CLAUDECODE" && v != ""
+	}) {
+		for _, k := range parentSessionVars {
+			strip[k] = true
+		}
+	}
+	env := make([]string, 0, len(inherited)+8)
+	for _, kv := range inherited {
 		if !strip[strings.SplitN(kv, "=", 2)[0]] {
 			env = append(env, kv)
 		}

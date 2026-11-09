@@ -6,11 +6,11 @@ This extension is a Go port of [pi-claude-bridge](https://github.com/elidickinso
 
 | what | pin |
 |---|---|
-| pi-claude-bridge | `6aa276a1498e5376363f5c1f8cf04bfcaee38c93` |
+| pi-claude-bridge | `6aa276a1498e5376363f5c1f8cf04bfcaee38c93`, plus these later commits ported on their own: f502f5d (silent-turn reminder, MCP description limit), 2edde93 (interrupted-turn resume), 5c4a268 (default output style), e93d51d (parent-session env markers), 0b096a8 (thinking off). The 0.10.0 session-sync rework (#222) and the AskClaude split (0.11.0) are not ported |
 | cc-session-io | 0.4.0 (MIT), the subset the bridge imports |
 | `@anthropic-ai/claude-agent-sdk` | 0.3.310 (Claude Code 2.1.310). The protocol client was written from the SDK's public type definitions and live probes ([protocol reference](docs/reference/agent-sdk-protocol-0.3.310.md)); the SDK itself is not vendored or depended on |
 | Claude Code | 2.1.310 (`ccproto.MinVersion`) |
-| PiG SDK | `github.com/MichaelKinsy/PiG/extensions/sdk` v0.5.3 ([signatures](docs/reference/pig-sdk-signatures-v0.5.3.md)) |
+| PiG SDK | `github.com/MichaelKinsy/PiG/extensions/sdk` v0.7.0 (PiG 0.7.0); the [signatures](docs/reference/pig-sdk-signatures-v0.5.3.md) recorded at v0.5.3 still match every symbol the bridge uses |
 | `@modelcontextprotocol/sdk` | 1.29.0, only as the reference for the JSON-RPC responses the in-process MCP server must produce |
 | `@earendil-works/pi-ai` | 1.2.0, source of the generated model catalog |
 | `golang.org/x/text` | v0.43.0, for NFC normalisation of project paths |

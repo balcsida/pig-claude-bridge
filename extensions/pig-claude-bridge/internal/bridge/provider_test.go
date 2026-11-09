@@ -370,7 +370,7 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 		Executable: h.exe, Cwd: cwd, Effort: "high", Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions",
 		IncludePartialMessages: true,
 		Settings: map[string]any{
-			"autoMemoryEnabled": false, "includeGitInstructions": false,
+			"autoMemoryEnabled": false, "includeGitInstructions": false, "outputStyle": "default",
 			"claudeMdExcludes": []string{"**/CLAUDE.md", "**/AGENTS.md", "**/.claude/rules/**"},
 		},
 		SDKMcpServers: []string{"custom-tools"}, AppendSystemPrompt: "APPEND",
@@ -413,8 +413,14 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 	}
 	for i, w := range snap.Argv {
 		if i > 0 && snap.Argv[i-1] == "--settings" {
-			var a, b any
-			if json.Unmarshal([]byte(argv[i]), &a) != nil || json.Unmarshal([]byte(w), &b) != nil || !reflect.DeepEqual(a, b) {
+			var a map[string]any
+			var b any
+			if json.Unmarshal([]byte(argv[i]), &a) != nil || json.Unmarshal([]byte(w), &b) != nil {
+				t.Fatalf("--settings: got %s want %s", argv[i], w)
+			}
+			// outputStyle postdates the snapshot (pi-claude-bridge 5c4a268); TestStreamSimpleBuildsProviderOptions pins it above.
+			delete(a, "outputStyle")
+			if !reflect.DeepEqual(any(a), b) {
 				t.Errorf("--settings: got %s want %s", argv[i], w)
 			}
 		} else if argv[i] != w {
@@ -428,6 +434,9 @@ func TestStreamSimpleBuildsProviderOptions(t *testing.T) {
 	}
 	// The recorder builds env without process.env, where the TypeScript bridge sets this one.
 	delete(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+	for _, k := range ccproto.EnvAddedAfterSnapshot {
+		delete(env, k)
+	}
 	if !reflect.DeepEqual(env, snap.Env) {
 		t.Errorf("env\n got  %v\n want %v", env, snap.Env)
 	}

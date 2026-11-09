@@ -5,9 +5,10 @@ marked *(Task 25)* are filled in by the final verification task.
 
 ## Versions
 
-- Claude Code: `2.1.310 (Claude Code)` (`claude --version`, `~/.local/bin/claude`)
+- Claude Code: `2.1.310 (Claude Code)` (`claude --version`, `~/.local/bin/claude`) at the first run; `2.1.319` at the 2026-11-09 re-run below
 - Agent SDK mirrored: 0.3.310
-- TypeScript reference: pi-claude-bridge commit 6aa276a
+- TypeScript reference: pi-claude-bridge commit 6aa276a, plus the ported commits listed in UPSTREAM.md
+- PiG Go SDK: v0.7.0 since 2026-11-09 (v0.5.3 before); the whole unit suite passes unchanged under both
 - Go: see `extensions/pig-claude-bridge/go.mod`
 
 ## Contract tests
@@ -30,6 +31,12 @@ the rebuild, attachment and parallel-result live tests that `tests/live` also ru
 - Each test runs the child in a fresh scratch directory; the only part of `~/.claude` touched is that
   directory's project hash directory, which is removed afterwards.
 - Re-run on every Claude Code bump. A failure names the broken assumption.
+- Re-run on 2026-11-09 against claude 2.1.319 (PiG SDK v0.7.0): all 24 contract tests passed, the 22 above plus
+  `TestDisableFeatureFlagsTurnsFlagEvaluationOff` (the child's debug log reports the session-notices flag as
+  `false(disabled)`; without the bridge's env the same line reads `true(payload)`) and
+  `TestOutputStyleDefaultOverridesAUserLevelOutputStyle`. `TestGetUsageAnswersWithKeyedWindows` was tightened
+  on the way: `get_usage` reports a window the account has not opened as `null` (`five_hour` that day), which
+  the test now accepts. The CLI's MCP `clientInfo.version` is `2.1.319`.
 - Not covered (as in TypeScript): `DISABLE_AUTO_COMPACT`, steer draining at tool boundaries, `rate_limit_event`
   shape; `updatedInput` on allow cannot be expressed through the client (it answers `can_use_tool` with the
   "not provided" error).

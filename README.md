@@ -190,6 +190,8 @@ Claude Code sends a `rate_limit_event` when a usage window changes. The TypeScri
 
 **System prompt changes mid-session may not reach the model.** Project context (AGENTS.md/CLAUDE.md), skills, and extension-written instructions are captured on the first request and reused on resume. This keeps the cached prefix stable, but later changes may not take effect until a rebuild or compaction. Start a new session if updated instructions must take effect immediately.
 
+**Claude Code's feature flags and experiments are off.** The bridge starts Claude Code with `CLAUDE_CODE_DISABLE_FEATURE_FLAGS=1` (and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which implies it), so the GrowthBook flags and A/B experiments Claude Code evaluates at startup (`tengu_*`, cached in `~/.claude.json`) all take their built-in defaults in bridge sessions. That keeps a client-side experiment (a prompt or tool tweak, a limit, a feature toggle) from changing a session unannounced; a change made on the server side of a model is outside what any client can switch off.
+
 **Exported Anthropic environment variables override the Claude Code child (pi-claude-bridge issue #107).** An exported `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` redirects Claude Code to that gateway and every turn fails with its auth error. Unset them for the PiG process.
 
 ## More

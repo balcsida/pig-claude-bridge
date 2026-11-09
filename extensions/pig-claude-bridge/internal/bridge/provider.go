@@ -347,11 +347,14 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	settings := config.ClaudeCodeSettings(providerSettings)
 	settings["claudeMdExcludes"] = claudeMdExcludes
 	settings["includeGitInstructions"] = false
+	// A user's output style is persona text written for standalone Claude Code; PiG owns the persona here.
+	settings["outputStyle"] = "default"
 	b.applyFastMode(settings)
 	debugFile, onStderr := b.cliDebugOptions("provider")
 	opts := ccproto.Options{
 		Executable: exe, Cwd: cwd, Effort: effort, Resume: syncResult.SessionID,
-		Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions", IncludePartialMessages: true,
+		ThinkingDisabled: thinkingDisabledForReasoning(model, options["reasoning"]),
+		Tools:            []string{}, ToolsSet: true, PermissionMode: "bypassPermissions", IncludePartialMessages: true,
 		Settings: settings, DebugFile: debugFile, AppendSystemPrompt: systemPromptAppend, ExtraArgs: extraArgs,
 	}
 	handlers := ccproto.Handlers{OnStderr: onStderr}

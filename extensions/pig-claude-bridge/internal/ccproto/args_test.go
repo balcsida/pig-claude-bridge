@@ -75,10 +75,42 @@ func TestBuildEnv(t *testing.T) {
 	env := BuildEnv(base, Options{})
 	want := []string{"PATH=/bin", "HOME=/h",
 		"CLAUDE_CODE_ENTRYPOINT=sdk-ts", "CLAUDE_AGENT_SDK_VERSION=0.3.310", "CLAUDE_CODE_SDK_READS_SESSION_STATE=1",
-		"CLAUDE_CODE_ELEGANT_MEADOW=0", "DISABLE_AUTO_COMPACT=1", "ENABLE_CLAUDEAI_MCP_SERVERS=0",
+		"CLAUDE_CODE_DISABLE_FEATURE_FLAGS=1", "CLAUDE_CODE_ELEGANT_MEADOW=0", "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=16384",
+		"CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1", "CLAUDE_CODE_SILENT_TURN_REMINDER=0",
+		"DISABLE_AUTO_COMPACT=1", "ENABLE_CLAUDEAI_MCP_SERVERS=0",
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "PI_CODING_AGENT=true"}
 	if !reflect.DeepEqual(env, want) {
 		t.Fatalf("got %q\nwant %q", env, want)
+	}
+}
+
+// When PiG was started from inside a Claude Code session (CLAUDECODE set), that session's markers
+// are dropped so the SDK stamps our own entrypoint and version; without CLAUDECODE they pass through.
+func TestBuildEnvDropsParentClaudeCodeSessionMarkers(t *testing.T) {
+	parent := []string{"CLAUDECODE=1", "CLAUDE_CODE_SESSION_ID=parent", "CLAUDE_ENV_FILE=/tmp/env", "CLAUDE_CODE_ENTRYPOINT=cli",
+		"CLAUDE_CODE_SSE_PORT=1234", "AI_AGENT=claude", "CLAUDE_CONFIG_DIR=/cfg"}
+	env := BuildEnv(parent, Options{})
+	for _, gone := range []string{"CLAUDECODE=1", "CLAUDE_CODE_SESSION_ID=parent", "CLAUDE_ENV_FILE=/tmp/env", "CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_SSE_PORT=1234"} {
+		if slices.Contains(env, gone) {
+			t.Errorf("%s survived: %q", gone, env)
+		}
+	}
+	for _, kept := range []string{"AI_AGENT=claude", "CLAUDE_CONFIG_DIR=/cfg", "CLAUDE_CODE_ENTRYPOINT=sdk-ts"} {
+		if !slices.Contains(env, kept) {
+			t.Errorf("missing %s in %q", kept, env)
+		}
+	}
+	if env := BuildEnv([]string{"CLAUDE_CODE_SESSION_ID=other"}, Options{}); !slices.Contains(env, "CLAUDE_CODE_SESSION_ID=other") {
+		t.Errorf("without CLAUDECODE the marker should pass through: %q", env)
+	}
+}
+
+// thinking:{type:"disabled"} is --thinking=disabled, right after the fixed prefix and before --effort (sdk.mjs initialize()).
+func TestBuildArgsThinkingDisabled(t *testing.T) {
+	got := BuildArgs(Options{ThinkingDisabled: true, Effort: "low"})
+	want := []string{"--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--thinking=disabled", "--effort=low"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }
 

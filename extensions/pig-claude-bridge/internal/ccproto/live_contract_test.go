@@ -1179,6 +1179,10 @@ func TestGetUsageAnswersWithKeyedWindows(t *testing.T) {
 		t.Fatalf("get_usage reply has no rate_limits: %s", raw)
 	}
 	window := func(name string, w any) {
+		if w == nil { // a window the account has not opened is null (seen for five_hour on 2.1.319)
+			t.Logf("%s is null", name)
+			return
+		}
 		if _, ok := at(w, "utilization").(float64); !ok {
 			t.Errorf("%s lacks a numeric utilization: %v", name, w)
 		}
@@ -1201,6 +1205,9 @@ func TestGetUsageAnswersWithKeyedWindows(t *testing.T) {
 	if _, present := limits["cedar_ember"]; !present {
 		t.Error("rate_limits no longer carries cedar_ember, the reset-grant block")
 	}
+	if t.Failed() {
+		t.Logf("get_usage reply: %s", raw)
+	}
 }
 
 func TestFastModeNeedsTheSettingsOptInUnderTheSDK(t *testing.T) {
@@ -1215,6 +1222,75 @@ func TestFastModeNeedsTheSettingsOptInUnderTheSDK(t *testing.T) {
 		o.Model, o.Settings = "claude-opus-5-5", tc.settings
 		if got := initOnly(t, startLive(t, o, nil))["fast_mode_state"]; got != tc.want {
 			t.Errorf("settings %v: init fast_mode_state = %v, want %q", tc.settings, got, tc.want)
+		}
+	}
+}
+
+// The bridge's child env turns feature-flag evaluation off (CLAUDE_CODE_DISABLE_FEATURE_FLAGS, and
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC implies it too), so every GrowthBook flag and experiment
+// (tengu_*) resolves to its built-in default: Claude Code's debug log reports the session-notices flag
+// as disabled rather than read from a payload or the disk cache. Probed on 2.1.319: without the
+// variables the same line reads `flag=true(payload)`.
+func TestDisableFeatureFlagsTurnsFlagEvaluationOff(t *testing.T) {
+	api := newStubAPI(t)
+	o := providerOptions(t)
+	o.MaxTurns, o.NoSessionPersistence = 1, true
+	o.Env = []string{"ANTHROPIC_BASE_URL=" + api.URL}
+	o.DebugFile = filepath.Join(o.Cwd, "cc-debug.log")
+	obs := run(t, startLive(t, o, nil), "Reply OK.")
+	if obs.result == nil || obs.result["subtype"] != "success" {
+		t.Fatalf("result = %v", obs.result)
+	}
+	log, err := os.ReadFile(o.DebugFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := regexp.MustCompile(`\[session-notices\][^\n]*`).Find(log)
+	if line == nil {
+		t.Fatal("the debug log no longer carries a [session-notices] line; re-point this contract at another flag read")
+	}
+	if !strings.Contains(string(line), "flag=false(disabled)") {
+		t.Errorf("flag evaluation is not reported as disabled: %s", line)
+	}
+}
+
+// outputStyle:"default" in --settings overrides a user-level output style (pi-claude-bridge #220): the
+// persona text of a style in CLAUDE_CONFIG_DIR/output-styles no longer reaches the system prompt.
+func TestOutputStyleDefaultOverridesAUserLevelOutputStyle(t *testing.T) {
+	api := newStubAPI(t)
+	configDir := t.TempDir()
+	marker := "probe-style-" + newUUID(t)
+	if err := os.MkdirAll(filepath.Join(configDir, "output-styles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "output-styles", "probe.md"), []byte("---\nname: Probe\ndescription: probe\n---\n"+marker+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(`{"outputStyle":"Probe"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, overridden := range []bool{false, true} {
+		o := providerOptions(t)
+		o.MaxTurns, o.NoSessionPersistence = 1, true
+		o.SettingSourcesSet, o.SettingSources = true, []string{"user"}
+		o.Env = []string{"ANTHROPIC_BASE_URL=" + api.URL, "ANTHROPIC_API_KEY=stub", "CLAUDE_CONFIG_DIR=" + configDir}
+		if overridden {
+			o.Settings = map[string]any{"outputStyle": "default"}
+		}
+		obs := run(t, startLive(t, o, nil), "Reply OK.")
+		if obs.result == nil || obs.result["subtype"] != "success" {
+			t.Fatalf("overridden=%v: result = %v", overridden, obs.result)
+		}
+		req := api.last()
+		if req == nil {
+			t.Fatal("CC sent no request")
+		}
+		if got := strings.Contains(string(mustJSON(req)), marker); got == overridden {
+			if overridden {
+				t.Errorf("the user's output style survived outputStyle:default")
+			} else {
+				t.Fatal("CC did not load the user-level output style; this test's control is obsolete")
+			}
 		}
 	}
 }

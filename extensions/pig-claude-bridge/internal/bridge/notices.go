@@ -155,6 +155,21 @@ var validEfforts = map[string]bool{"low": true, "medium": true, "high": true, "x
 // the level is unsupported on that model: no effort is sent, so Claude Code's own
 // default applies. A map value is trusted only when it names a level Claude Code
 // accepts. "" means no effort.
+// thinkingDisabledForReasoning reports whether Claude Code should be told thinking is off. PiG
+// sends no reasoning level when thinking is off, and Claude Code then applies its own default
+// (thinking on). As pi-ai's Anthropic provider: only for reasoning models, and not when the
+// model's thinkingLevelMap marks "off" unsupported (null), as on models that always think.
+func thinkingDisabledForReasoning(model map[string]any, reasoning any) bool {
+	if level, _ := reasoning.(string); level != "" {
+		return false
+	}
+	if on, _ := model["reasoning"].(bool); !on {
+		return false
+	}
+	off, present := obj(model["thinkingLevelMap"])["off"]
+	return !(present && off == nil)
+}
+
 func effortForReasoning(model map[string]any, reasoning any) string {
 	level, _ := reasoning.(string)
 	if level == "" {
