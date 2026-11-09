@@ -47,7 +47,7 @@ func newTestBridge(t *testing.T, debug bool) (b *Bridge, claudeDir, agentDir str
 func (b *Bridge) resetSharedSession() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.sessions = map[string]SessionState{}
+	b.sessions = map[string]legacyState{}
 	b.historyRewritten = map[string]struct{}{}
 }
 

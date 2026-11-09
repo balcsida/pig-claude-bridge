@@ -76,7 +76,7 @@ func TestSyncSharedSession(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		cwd := t.TempDir()
 		seed(t, id1, cwd, nil)
-		b.setSessionStateFor("", &SessionState{SessionID: id1, Cursor: 2, Cwd: cwd})
+		b.setSessionStateFor("", &legacyState{SessionID: id1, Cursor: 2, Cwd: cwd})
 		msgs := []map[string]any{user("Hi"), say("Hello."), system(""), user("Next")}
 		res, err := b.syncSharedSession(nil, "", msgs, nil, cwd, "")
 		if err != nil {
@@ -96,7 +96,7 @@ func TestSyncSharedSession(t *testing.T) {
 	t.Run("starts a fresh session for a shorter context and preserves the parent's", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		cwd := t.TempDir()
-		main := SessionState{SessionID: id1, Cursor: 42, Cwd: cwd}
+		main := legacyState{SessionID: id1, Cursor: 42, Cwd: cwd}
 		b.setSessionStateFor("", &main)
 		res, err := b.syncSharedSession(nil, "", []map[string]any{user("Summarize this conversation.")}, nil, cwd, "")
 		if err != nil {
@@ -132,7 +132,7 @@ func TestSyncSharedSession(t *testing.T) {
 		if err := s.Save(); err != nil {
 			t.Fatal(err)
 		}
-		b.setSessionStateFor("", &SessionState{SessionID: id1, Cursor: 0, Cwd: cwd})
+		b.setSessionStateFor("", &legacyState{SessionID: id1, Cursor: 0, Cwd: cwd})
 		host := &recordingHost{}
 		res, err := b.syncSharedSession(host, "", []map[string]any{user(prompt), say("Noted."), user("Now what did it say?")}, nil, cwd, "")
 		if err != nil {
@@ -160,7 +160,7 @@ func TestSyncOutcomes(t *testing.T) {
 	t.Run("APPEND advances the cursor past a trailing assistant and logs the reuse line", func(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
 		cwd := t.TempDir()
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, Cursor: 1, Cwd: "/old"})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, Cursor: 1, Cwd: "/old"})
 		res, err := b.syncSharedSession(nil, "pi-1", []map[string]any{user("Hi"), say("Hello."), user("Next")}, nil, cwd, "")
 		if err != nil {
 			t.Fatal(err)
@@ -202,7 +202,7 @@ func TestSyncOutcomes(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
 		cwd := t.TempDir()
 		seed(t, id1, cwd, nil)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, Cursor: 2, Cwd: cwd, NeedsRebuild: true})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, Cursor: 2, Cwd: cwd, NeedsRebuild: true})
 		res, err := b.syncSharedSession(nil, "pi-1", []map[string]any{user("Only"), say("one"), user("Next")}, nil, cwd, "")
 		if err != nil {
 			t.Fatal(err)
@@ -226,7 +226,7 @@ func TestSyncOutcomes(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
 		cwd := t.TempDir()
 		seed(t, id1, cwd, nil)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, Cursor: 2, Cwd: cwd, NeedsRebuild: true, ForceRotate: true})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, Cursor: 2, Cwd: cwd, NeedsRebuild: true, ForceRotate: true})
 		res, err := b.syncSharedSession(nil, "pi-1", []map[string]any{user("Hi"), say("Hello."), user("Next")}, nil, cwd, "")
 		if err != nil {
 			t.Fatal(err)
@@ -250,7 +250,7 @@ func TestSyncOutcomes(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		cwd := t.TempDir()
 		seed(t, id1, cwd, nil)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, Cursor: 2, Cwd: cwd})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, Cursor: 2, Cwd: cwd})
 		call := map[string]any{"role": "assistant", "stopReason": "toolUse", "content": []any{
 			map[string]any{"type": "toolCall", "id": "toolu_1", "name": "read", "arguments": map[string]any{"path": "a"}}}}
 		result := map[string]any{"role": "toolResult", "toolCallId": "toolu_1", "toolName": "read", "isError": false,
@@ -346,10 +346,10 @@ func TestVerifyWrittenSessionWarnsAndDumps(t *testing.T) {
 // A mark landing between a sync's snapshot and its final store must survive: the
 // rebuilt file reflects the pre-rewrite history.
 func TestRebuildKeepsMarkSetSinceSnapshot(t *testing.T) {
-	rebuilt := SessionState{SessionID: id1, Cursor: 2}
+	rebuilt := legacyState{SessionID: id1, Cursor: 2}
 	t.Run("rewrite mark", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, NeedsRebuild: true})
 		snapshot := b.sessionStateFor("pi-1")
 		b.markRebuildForSession("pi-1", "session_compact")
 		b.storeRebuilt("pi-1", snapshot, rebuilt)
@@ -359,9 +359,9 @@ func TestRebuildKeepsMarkSetSinceSnapshot(t *testing.T) {
 	})
 	t.Run("abort mark", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, NeedsRebuild: true})
 		snapshot := b.sessionStateFor("pi-1")
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true, ForceRotate: true})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, NeedsRebuild: true, ForceRotate: true})
 		b.storeRebuilt("pi-1", snapshot, rebuilt)
 		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild || !st.ForceRotate {
 			t.Fatalf("state = %+v", st)
@@ -370,7 +370,7 @@ func TestRebuildKeepsMarkSetSinceSnapshot(t *testing.T) {
 	t.Run("a mark stored without markSeq", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		snapshot := b.sessionStateFor("pi-1") // no mirror yet, as in a first turn
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, NeedsRebuild: true})
 		b.storeRebuilt("pi-1", snapshot, rebuilt)
 		if st := b.sessionStateFor("pi-1"); !st.NeedsRebuild {
 			t.Fatalf("the mark was lost: %+v", st)
@@ -378,7 +378,7 @@ func TestRebuildKeepsMarkSetSinceSnapshot(t *testing.T) {
 	})
 	t.Run("no mark since", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-1", &SessionState{SessionID: id1, NeedsRebuild: true, ForceRotate: true})
+		b.setSessionStateFor("pi-1", &legacyState{SessionID: id1, NeedsRebuild: true, ForceRotate: true})
 		b.storeRebuilt("pi-1", b.sessionStateFor("pi-1"), rebuilt)
 		if st := b.sessionStateFor("pi-1"); st.NeedsRebuild || st.ForceRotate {
 			t.Fatalf("flags must clear: %+v", st)

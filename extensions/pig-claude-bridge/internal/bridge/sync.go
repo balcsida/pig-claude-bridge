@@ -117,7 +117,7 @@ func (b *Bridge) syncSharedSession(host Host, piSessionID string, messages []map
 	}
 	// Records, not messages: carried attachments are records too.
 	b.verifyWrittenSession(host, session.Path(), session.ID(), len(session.Records()), cwd)
-	b.storeRebuilt(piSessionID, shared, SessionState{SessionID: session.ID(), Cursor: len(priors), Cwd: cwd, PiSessionID: piSessionID})
+	b.storeRebuilt(piSessionID, shared, legacyState{SessionID: session.ID(), Cursor: len(priors), Cwd: cwd, PiSessionID: piSessionID})
 
 	id, n := short(session.ID()), len(session.Records())
 	res := SyncResult{Action: ActionRebuild, SessionID: session.ID(), Cursor: len(priors), Priors: len(priors)}

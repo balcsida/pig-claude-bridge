@@ -242,7 +242,7 @@ func (b *Bridge) killLiveQueries() {
 func (b *Bridge) clearSessions(event string) {
 	b.mu.Lock()
 	n := len(b.sessions)
-	b.sessions = map[string]SessionState{}
+	b.sessions = map[string]legacyState{}
 	b.historyRewritten = map[string]struct{}{}
 	b.mu.Unlock()
 	plural := "s"

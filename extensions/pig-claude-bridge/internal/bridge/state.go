@@ -2,10 +2,10 @@ package bridge
 
 import "sync"
 
-// SessionState mirrors the Claude Code conversation one pi session's turns run on.
+// legacyState mirrors the Claude Code conversation one pi session's turns run on.
 // It is a value: the Bridge stores and returns copies, so a caller can never race
 // the map by holding one.
-type SessionState struct {
+type legacyState struct {
 	SessionID string
 	Cursor    int
 	Cwd       string
@@ -36,7 +36,7 @@ func sessionKey(piSessionID string) string {
 }
 
 // sessionStateFor returns a copy of the mirror for piSessionID, or nil when it has none yet.
-func (b *Bridge) sessionStateFor(piSessionID string) *SessionState {
+func (b *Bridge) sessionStateFor(piSessionID string) *legacyState {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	s, ok := b.sessions[sessionKey(piSessionID)]
@@ -47,7 +47,7 @@ func (b *Bridge) sessionStateFor(piSessionID string) *SessionState {
 }
 
 // setSessionStateFor stores a copy of state, or deletes the mirror when state is nil.
-func (b *Bridge) setSessionStateFor(piSessionID string, state *SessionState) {
+func (b *Bridge) setSessionStateFor(piSessionID string, state *legacyState) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if state == nil {
@@ -150,12 +150,12 @@ func (b *Bridge) advanceCursor(piSessionID string, cursor int, cwd string) {
 
 // storeRebuilt stores the rebuilt mirror, keeping any rewrite mark or forced
 // rotation that landed after snapshot was read: the new file predates that rewrite.
-func (b *Bridge) storeRebuilt(piSessionID string, snapshot *SessionState, rebuilt SessionState) {
+func (b *Bridge) storeRebuilt(piSessionID string, snapshot *legacyState, rebuilt legacyState) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := sessionKey(piSessionID)
 	if cur, ok := b.sessions[key]; ok {
-		var was SessionState
+		var was legacyState
 		if snapshot != nil {
 			was = *snapshot
 		}

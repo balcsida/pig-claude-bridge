@@ -511,7 +511,7 @@ func TestEventHooks(t *testing.T) {
 	t.Run("a new, resumed or forked session drops every mirror; a startup does not", func(t *testing.T) {
 		for reason, dropped := range map[string]bool{"new": true, "resume": true, "fork": true, "startup": false, "reload": false} {
 			b, _, _ := newTestBridge(t, false)
-			b.setSessionStateFor("pi-a", &SessionState{SessionID: "cc-a"})
+			b.setSessionStateFor("pi-a", &legacyState{SessionID: "cc-a"})
 			b.markRebuildForSession("pi-a", "test")
 			b.OnSessionStart(&fakeHost{sessionID: "pi-b"}, reason)
 			if gone := b.sessionStateFor("pi-a") == nil && !b.historyRewrittenFor("pi-a"); gone != dropped {
@@ -525,8 +525,8 @@ func TestEventHooks(t *testing.T) {
 			(*Bridge).OnSessionTree,
 		} {
 			b, _, _ := newTestBridge(t, false)
-			b.setSessionStateFor("pi-a", &SessionState{SessionID: "cc-a"})
-			b.setSessionStateFor("pi-b", &SessionState{SessionID: "cc-b"})
+			b.setSessionStateFor("pi-a", &legacyState{SessionID: "cc-a"})
+			b.setSessionStateFor("pi-b", &legacyState{SessionID: "cc-b"})
 			b.rememberSummarySession("pi-a")
 			fire(b, &fakeHost{sessionID: "pi-a"})
 			if !b.sessionStateFor("pi-a").NeedsRebuild || b.sessionStateFor("pi-b").NeedsRebuild || !b.historyRewrittenFor("pi-a") {
@@ -539,7 +539,7 @@ func TestEventHooks(t *testing.T) {
 	})
 	t.Run("session_compact logs the reason and retry state in its tag", func(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
-		b.setSessionStateFor("pi-a", &SessionState{SessionID: "cc-a-12345678"})
+		b.setSessionStateFor("pi-a", &legacyState{SessionID: "cc-a-12345678"})
 		b.OnSessionCompact(&fakeHost{sessionID: "pi-a"}, "session_compact:threshold:willRetry=false")
 		if log := readDebugLog(t, agentDir); !strings.Contains(log, "session_compact:threshold:willRetry=false: marking needsRebuild on session cc-a-123") {
 			t.Fatalf("log:\n%s", log)
@@ -557,7 +557,7 @@ func TestEventHooks(t *testing.T) {
 		b, _, agentDir := newTestBridge(t, true)
 		host := &fakeHost{sessionID: "s9", cwd: "/x"}
 		b.OnSessionStart(host, "startup")
-		b.setSessionStateFor("s9", &SessionState{SessionID: "cc"})
+		b.setSessionStateFor("s9", &legacyState{SessionID: "cc"})
 		b.lockSync("s9")()
 		b.addContext("s9")
 		b.OnSessionShutdown(host)

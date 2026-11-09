@@ -499,7 +499,7 @@ func (b *Bridge) completeQuery(q *QueryContext, client ccproto.Client, syncResul
 		latest, missedSteer := q.latestCursor, q.missedSteer
 		q.mu.Unlock()
 		done := ""
-		b.updateSession(q.piSessionID, func(s *SessionState) bool {
+		b.updateSession(q.piSessionID, func(s *legacyState) bool {
 			id := captured
 			if id == "" {
 				id = s.SessionID
@@ -539,7 +539,7 @@ func orNone(s string) string {
 // updateSession applies fn to a copy of the mirror (zero when it has none) and
 // stores the result when fn reports true. fn runs under b.mu: it must not call back
 // into the Bridge or do I/O.
-func (b *Bridge) updateSession(piSessionID string, fn func(*SessionState) bool) {
+func (b *Bridge) updateSession(piSessionID string, fn func(*legacyState) bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := sessionKey(piSessionID)

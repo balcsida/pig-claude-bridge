@@ -500,7 +500,7 @@ func TestDeliverToolResults(t *testing.T) {
 	t.Run("marks the session for rebuild when the push is rejected, and still delivers results", func(t *testing.T) {
 		s := newDelivery(t, "reject")
 		s.q.pendingToolCalls["call-1"] = handler(s, "read")
-		s.b.setSessionStateFor("", &SessionState{SessionID: "abc", Cursor: 3, Cwd: "/tmp"})
+		s.b.setSessionStateFor("", &legacyState{SessionID: "abc", Cursor: 3, Cwd: "/tmp"})
 		deliver(s, []convert.McpResult{result("call-1")}, steerText)
 		want := []string{"push:actually stop", "push-rejected", "resolve:read"}
 		if got := s.rec.list(); !reflect.DeepEqual(got, want) {
@@ -517,7 +517,7 @@ func TestDeliverToolResults(t *testing.T) {
 	t.Run("marks the session for rebuild when there is no prompt stream", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
 		q := newQueryContext()
-		b.setSessionStateFor("", &SessionState{SessionID: "abc", Cursor: 3, Cwd: "/tmp"})
+		b.setSessionStateFor("", &legacyState{SessionID: "abc", Cursor: 3, Cwd: "/tmp"})
 		b.deliverToolResults(context.Background(), nil, q, nil, steerText, 4)
 		if state := b.sessionStateFor(""); state == nil || !state.NeedsRebuild {
 			t.Fatalf("state = %+v", state)
@@ -572,7 +572,7 @@ func TestMissedSteerAfterFailedPromptStream(t *testing.T) {
 			q.promptStream = newPromptStream()
 			q.promptStream.Fail(errors.New("prompt stream closed"))
 			if hasMirror {
-				b.setSessionStateFor("pi-parent", &SessionState{SessionID: "cc", Cursor: 3, PiSessionID: "pi-parent"})
+				b.setSessionStateFor("pi-parent", &legacyState{SessionID: "cc", Cursor: 3, PiSessionID: "pi-parent"})
 			}
 			b.deliverToolResults(context.Background(), nil, q, nil, steer, 4)
 			if !q.missedSteer || len(q.pendingSteerUUIDs) != 0 {
@@ -882,7 +882,7 @@ func TestDiscardRewrittenQuery(t *testing.T) {
 
 	t.Run("rotates the session id of the discarding session's own mirror, because the rebuild follows the kill immediately", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-parent", &SessionState{SessionID: "abc", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-parent"})
+		b.setSessionStateFor("pi-parent", &legacyState{SessionID: "abc", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-parent"})
 		p := parkedQuery(t, b, "call_1", "pi-parent")
 		b.discardRewrittenQuery(p.q, discardReason)
 		if s := b.sessionStateFor("pi-parent"); s == nil || !s.ForceRotate || !s.NeedsRebuild {
@@ -892,7 +892,7 @@ func TestDiscardRewrittenQuery(t *testing.T) {
 
 	t.Run("leaves a foreign session's mirror untouched when the foreign query discards", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-parent", &SessionState{SessionID: "parent", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-parent"})
+		b.setSessionStateFor("pi-parent", &legacyState{SessionID: "parent", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-parent"})
 		p := parkedQuery(t, b, "call_1", "pi-b")
 		b.markRebuildForSession("pi-b", "session_compact:threshold")
 		b.armStaleContexts()
@@ -1378,7 +1378,7 @@ func (*panicHost) Notify(string, string) { panic("host exploded") }
 func TestProcessExitWhileParkedReleasesHandlerAndMarksRebuild(t *testing.T) {
 	h := newConsumeHarness(t, "read")
 	h.q.piSessionID = "pi-exit"
-	h.b.setSessionStateFor("pi-exit", &SessionState{SessionID: "abc", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-exit"})
+	h.b.setSessionStateFor("pi-exit", &legacyState{SessionID: "abc", Cursor: 3, Cwd: "/tmp", PiSessionID: "pi-exit"})
 	done := h.start()
 	reply := h.call(t, "read", "toolu_1")
 	waitParked(t, h.q, 1)
@@ -1486,7 +1486,7 @@ func TestATurnStillStreaming(t *testing.T) {
 	t.Run("drops the session mirror at an error result, so a queued steer is rebuilt", func(t *testing.T) {
 		h := newConsumeHarness(t)
 		h.q.piSessionID = "pi-finalized"
-		h.b.setSessionStateFor("pi-finalized", &SessionState{SessionID: "cc", Cursor: 2, PiSessionID: "pi-finalized"})
+		h.b.setSessionStateFor("pi-finalized", &legacyState{SessionID: "cc", Cursor: 2, PiSessionID: "pi-finalized"})
 		h.client.emit(textStartFrames()...)
 		h.client.emit(errorResultFrame())
 		receive(t, h.start(), "teardown")

@@ -10,8 +10,8 @@ func TestCrossSessionMarks(t *testing.T) {
 
 	t.Run("a rewrite of one session leaves another session's mirror untouched", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor(parent, &SessionState{SessionID: "cc-P", Cursor: 2, PiSessionID: parent})
-		b.setSessionStateFor(child, &SessionState{SessionID: "cc-C", Cursor: 1, PiSessionID: child})
+		b.setSessionStateFor(parent, &legacyState{SessionID: "cc-P", Cursor: 2, PiSessionID: parent})
+		b.setSessionStateFor(child, &legacyState{SessionID: "cc-C", Cursor: 1, PiSessionID: child})
 		b.markRebuildForSession(child, "session_compact")
 		if !b.sessionStateFor(child).NeedsRebuild {
 			t.Fatal("the rewriting session must be marked")
@@ -42,7 +42,7 @@ func TestCrossSessionMarks(t *testing.T) {
 	})
 	t.Run("a child's state never aliases the parent's", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor(parent, &SessionState{SessionID: "cc-P", Cursor: 2})
+		b.setSessionStateFor(parent, &legacyState{SessionID: "cc-P", Cursor: 2})
 		got := b.sessionStateFor(parent)
 		got.Cursor = 99
 		if b.sessionStateFor(parent).Cursor != 2 {
@@ -74,7 +74,7 @@ func TestOrphanResultAfterRestart(t *testing.T) {
 	})
 	t.Run("the none key is marked on its mirror but never armed", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("", &SessionState{SessionID: "cc-none"})
+		b.setSessionStateFor("", &legacyState{SessionID: "cc-none"})
 		b.markRebuildForSession("", "session_compact")
 		if !b.sessionStateFor("").NeedsRebuild || b.historyRewrittenFor("") || b.historyRewrittenFor(noSession) {
 			t.Fatal("(none) mirror is marked, the discard set holds real ids only")
@@ -82,11 +82,11 @@ func TestOrphanResultAfterRestart(t *testing.T) {
 	})
 	t.Run("an abort mark in one session does not orphan another session's result", func(t *testing.T) {
 		b, _, _ := newTestBridge(t, false)
-		b.setSessionStateFor("pi-other", &SessionState{SessionID: "cc-other", NeedsRebuild: true, ForceRotate: true})
+		b.setSessionStateFor("pi-other", &legacyState{SessionID: "cc-other", NeedsRebuild: true, ForceRotate: true})
 		if b.sessionStateFor("pi-mine") != nil {
 			t.Fatal("pi-mine must have no mirror")
 		}
-		want := SessionState{SessionID: "cc-other", NeedsRebuild: true, ForceRotate: true}
+		want := legacyState{SessionID: "cc-other", NeedsRebuild: true, ForceRotate: true}
 		if got := *b.sessionStateFor("pi-other"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v", got)
 		}
