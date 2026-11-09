@@ -46,7 +46,7 @@ func seedRebuiltParallelSession(t *testing.T, cwd, id string) *ccsession.Session
 	if err != nil {
 		t.Fatal(err)
 	}
-	anthropic, _, _, err := convert.ConvertPiMessages(piHistoryWithParallelCall(), nil)
+	anthropic, _, _, err := convert.ConvertPiMessages(piHistoryWithParallelCall(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

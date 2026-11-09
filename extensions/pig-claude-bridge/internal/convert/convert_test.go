@@ -49,7 +49,7 @@ var volatile = []string{"uuid", "parentUuid", "sessionId", "timestamp", "slug", 
 // keyed on (port of diag/lib/write-path.mjs).
 func transcript(t *testing.T, piMessages []map[string]any) []string {
 	t.Helper()
-	anthropic, _, _, err := ConvertPiMessages(piMessages, nil)
+	anthropic, _, _, err := ConvertPiMessages(piMessages, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestRebuildsExtendTheTranscriptInsteadOfRewritingIt(t *testing.T) {
 }
 
 func TestRepairToolPairingIsIdempotent(t *testing.T) {
-	anthropic, _, _, err := ConvertPiMessages(loadFixture(t), nil)
+	anthropic, _, _, err := ConvertPiMessages(loadFixture(t), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestRepairToolPairingIsIdempotent(t *testing.T) {
 
 func TestRealSessionRoundTripsWithEveryToolResultIntact(t *testing.T) {
 	corpus := loadFixture(t)
-	anthropic, _, _, err := ConvertPiMessages(corpus, nil)
+	anthropic, _, _, err := ConvertPiMessages(corpus, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,9 +235,8 @@ func TestMapPiToolNameToSdk(t *testing.T) {
 		custom map[string]string
 		want   string
 	}{
-		{"builtin without a map", "bash", nil, "Bash"},
-		{"builtin matched case-insensitively", "Read", nil, "Read"},
-		{"custom without a map is pascal-cased", "my_custom_tool", nil, "MyCustomTool"},
+		{"a nil map is an empty one: the prefix, never a builtin name", "bash", nil, "mcp__custom-tools__bash"},
+		{"unserved custom tool keeps its casing under the prefix", "my_Custom_tool", nil, "mcp__custom-tools__my_Custom_tool"},
 		{"served tool takes its map entry", "read", custom, "mcp__custom-tools__read"},
 		{"unserved tool gets the prefix, never a builtin name", "bash", custom, "mcp__custom-tools__bash"},
 		{"empty name", "", custom, ""},
@@ -256,27 +255,11 @@ func TestMapPiToolNameToSdk(t *testing.T) {
 		if err == nil || err.Error() != want {
 			t.Fatalf("err = %v", err)
 		}
-		_, _, _, err = ConvertPiMessages(decodeMessages(t, `[{"role":"assistant","content":[{"type":"toolCall","id":"x","name":"mcp__custom-tools__read","arguments":{}}]}]`), nil)
+		_, _, _, err = ConvertPiMessages(decodeMessages(t, `[{"role":"assistant","content":[{"type":"toolCall","id":"x","name":"mcp__custom-tools__read","arguments":{}}]}]`), nil, nil)
 		if err == nil || err.Error() != want {
 			t.Fatalf("ConvertPiMessages err = %v", err)
 		}
 	})
-}
-
-// Expected values are what change-case's pascalCase returns for each input.
-func TestPascalCaseMatchesChangeCase(t *testing.T) {
-	cases := map[string]string{
-		"read": "Read", "write": "Write", "edit": "Edit", "bash": "Bash",
-		"my_custom_tool": "MyCustomTool", "kagi_search": "KagiSearch", "get_subagent_result": "GetSubagentResult",
-		"fetch": "Fetch", "Agent": "Agent", "AskClaude": "AskClaude", "web-search": "WebSearch",
-		"HTTPServer": "HttpServer", "foo2bar": "Foo2bar", "get2Thing": "Get2Thing", "a_1b": "A_1b",
-		"  spaced out  ": "SpacedOut", "": "", "___": "",
-	}
-	for in, want := range cases {
-		if got := pascalCase(in); got != want {
-			t.Errorf("pascalCase(%q) = %q, want %q", in, got, want)
-		}
-	}
 }
 
 func TestSanitizeToolID(t *testing.T) {
@@ -291,18 +274,18 @@ func TestSanitizeToolID(t *testing.T) {
 }
 
 func TestConvertPiMessages(t *testing.T) {
-	t.Run("drops an aborted turn and counts it", func(t *testing.T) {
-		msgs, _, dropped, err := ConvertPiMessages(decodeMessages(t, `[{"role":"user","content":"hi"},{"role":"assistant","provider":"claude-bridge","content":[]}]`), nil)
+	t.Run("drops an aborted turn, not fabricating a reply", func(t *testing.T) {
+		msgs, _, origins, err := ConvertPiMessages(decodeMessages(t, `[{"role":"user","content":"hi"},{"role":"assistant","provider":"claude-bridge","content":[]}]`), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(msgs) != 1 || dropped.AbortedTurns != 1 {
-			t.Fatalf("got %d messages, dropped %+v", len(msgs), dropped)
+		if len(msgs) != 1 || !reflect.DeepEqual(origins, [][]int{{0}}) {
+			t.Fatalf("got %d messages, origins %v", len(msgs), origins)
 		}
 	})
 
-	t.Run("keeps a slot when every block was filtered, and counts what went", func(t *testing.T) {
-		msgs, _, dropped, err := ConvertPiMessages(decodeMessages(t, `[{"role":"assistant","provider":"other","content":[{"type":"thinking","thinking":"x","thinkingSignature":"s"},{"type":"mystery"}]}]`), nil)
+	t.Run("keeps a slot when every block was filtered", func(t *testing.T) {
+		msgs, _, _, err := ConvertPiMessages(decodeMessages(t, `[{"role":"assistant","provider":"other","content":[{"type":"thinking","thinking":"x","thinkingSignature":"s"},{"type":"mystery"}]}]`), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -310,42 +293,27 @@ func TestConvertPiMessages(t *testing.T) {
 		if !reflect.DeepEqual(msgs, want) {
 			t.Fatalf("got %#v", msgs)
 		}
-		if dropped.Thinking != 1 || !reflect.DeepEqual(dropped.Providers, []string{"other"}) || dropped.Other["mystery"] != 1 {
-			t.Fatalf("dropped %+v", dropped)
-		}
-	})
-
-	t.Run("names a thinking block's provider as the TypeScript's ?? does", func(t *testing.T) {
-		_, _, dropped, err := ConvertPiMessages(decodeMessages(t, `[
-			{"role":"assistant","provider":"","content":[{"type":"thinking","thinking":"x"}]},
-			{"role":"assistant","content":[{"type":"thinking","thinking":"x"}]}]`), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(dropped.Providers, []string{"", "unknown"}) {
-			t.Fatalf("providers = %q", dropped.Providers)
-		}
 	})
 
 	t.Run("reads assistant content in either slice type", func(t *testing.T) {
-		msgs, _, dropped, err := ConvertPiMessages([]map[string]any{
+		msgs, _, _, err := ConvertPiMessages([]map[string]any{
 			{"role": "assistant", "content": []map[string]any{{"type": "text", "text": "hi"}}},
-		}, nil)
+		}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		want := []ccsession.Message{{Role: "assistant", Content: []ccsession.Block{ccsession.TextBlock{Type: "text", Text: "hi"}}}}
-		if !reflect.DeepEqual(msgs, want) || dropped.AbortedTurns != 0 {
-			t.Fatalf("got %#v, dropped %+v", msgs, dropped)
+		if !reflect.DeepEqual(msgs, want) {
+			t.Fatalf("got %#v", msgs)
 		}
 	})
 
-	t.Run("collects parallel results into one user message after their assistant message", func(t *testing.T) {
-		msgs, ids, _, err := ConvertPiMessages(decodeMessages(t, `[
+	t.Run("collects parallel results into one user message after their assistant message, with their origins", func(t *testing.T) {
+		msgs, ids, origins, err := ConvertPiMessages(decodeMessages(t, `[
 			{"role":"assistant","provider":"claude-bridge","content":[{"type":"toolCall","id":"a:1","name":"read","arguments":{}},{"type":"toolCall","id":"b:2","name":"read","arguments":{}}]},
 			{"role":"toolResult","toolCallId":"a:1","content":"A"},
 			{"role":"user","content":"steer"},
-			{"role":"toolResult","toolCallId":"b:2","content":"B","isError":true}]`), nil)
+			{"role":"toolResult","toolCallId":"b:2","content":"B","isError":true}]`), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -361,6 +329,48 @@ func TestConvertPiMessages(t *testing.T) {
 		}
 		if ids["a:1"] != "a_1" || ids["b:2"] != "b_2" {
 			t.Fatalf("ids %v", ids)
+		}
+		if !reflect.DeepEqual(origins, [][]int{{0}, {1, 3}, {2}}) {
+			t.Fatalf("origins %v", origins)
+		}
+	})
+
+	// pi-claude-bridge #227: Claude Code never sends an empty tool result; live it substitutes
+	// these placeholders, and the API rejects an empty result marked is_error.
+	t.Run("empty tool results get Claude Code's live placeholders", func(t *testing.T) {
+		msgs, _, _, err := ConvertPiMessages(decodeMessages(t, `[
+			{"role":"assistant","provider":"claude-bridge","content":[{"type":"toolCall","id":"a","name":"bash","arguments":{}},{"type":"toolCall","id":"b","name":"spaces","arguments":{}}]},
+			{"role":"toolResult","toolCallId":"a","toolName":"bash","content":[{"type":"text","text":""}],"isError":true},
+			{"role":"toolResult","toolCallId":"b","toolName":"spaces","content":"   "}]`), map[string]string{"bash": "mcp__custom-tools__bash"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []ccsession.Block{
+			ccsession.ToolResultBlock{Type: "tool_result", ToolUseID: "a", Content: "Command failed with no output", IsError: true},
+			ccsession.ToolResultBlock{Type: "tool_result", ToolUseID: "b", Content: "(mcp__custom-tools__spaces completed with no output)"},
+		}
+		if !reflect.DeepEqual(msgs[1].Content, want) {
+			t.Fatalf("got %#v", msgs[1].Content)
+		}
+		if raw, _ := json.Marshal(msgs[1].Content.([]ccsession.Block)[1]); strings.Contains(string(raw), "is_error") {
+			t.Fatalf("is_error is written on a success: %s", raw)
+		}
+	})
+
+	t.Run("a recorded block replaces the converted result verbatim, by pi tool call id", func(t *testing.T) {
+		recorded := map[string]json.RawMessage{"a:1": json.RawMessage(`{"tool_use_id":"a_1","type":"tool_result","content":"CC's copy"}`)}
+		msgs, _, _, err := ConvertPiMessages(decodeMessages(t, `[
+			{"role":"assistant","provider":"claude-bridge","content":[{"type":"toolCall","id":"a:1","name":"read","arguments":{}}]},
+			{"role":"toolResult","toolCallId":"a:1","content":"pi's copy"}]`), nil, recorded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(msgs[1].Content)
+		if err != nil || string(raw) != `[{"tool_use_id":"a_1","type":"tool_result","content":"CC's copy"}]` {
+			t.Fatalf("got %s, %v", raw, err)
+		}
+		if repaired := ccsession.RepairToolPairing(msgs); len(repaired) != 2 || !reflect.DeepEqual(repaired[1], msgs[1]) {
+			t.Fatalf("the repair did not keep the raw block paired: %#v", repaired)
 		}
 	})
 }

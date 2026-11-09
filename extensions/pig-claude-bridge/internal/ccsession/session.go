@@ -232,6 +232,20 @@ func (s *Session) AddToolResults(results []ToolResultBlock) error {
 		r.Type = "tool_result"
 		blocks[i] = r
 	}
+	return s.AddToolResultBlocks(blocks)
+}
+
+// AddToolResultBlocks adds a user message of tool_result blocks written exactly as
+// given (cc-session-io 0.4.1 addToolResultBlocks): a RawBlock keeps Claude Code's key order.
+func (s *Session) AddToolResultBlocks(blocks []Block) error {
+	if len(blocks) == 0 {
+		return errors.New("ccsession: AddToolResultBlocks: blocks are empty; Anthropic rejects empty message content")
+	}
+	for _, b := range blocks {
+		if b.blockType() != "tool_result" {
+			return fmt.Errorf("ccsession: AddToolResultBlocks: %s block is not a tool_result", b.blockType())
+		}
+	}
 	return s.AddUserMessage(blocks)
 }
 
@@ -459,17 +473,16 @@ func (s *Session) importMessage(msg Message) error {
 	if !ok {
 		return s.AddUserMessage(msg.Content)
 	}
-	var results []ToolResultBlock
-	var rest []Block
+	var results, rest []Block
 	for _, b := range blocks {
-		if tr, ok := b.(ToolResultBlock); ok {
-			results = append(results, tr)
+		if b.blockType() == "tool_result" {
+			results = append(results, b)
 		} else {
 			rest = append(rest, b)
 		}
 	}
 	if len(results) > 0 {
-		if err := s.AddToolResults(results); err != nil {
+		if err := s.AddToolResultBlocks(results); err != nil {
 			return err
 		}
 	}

@@ -98,6 +98,13 @@ type ToolUseBlock struct {
 	Input any    `json:"input"`
 }
 
+// RawBlock is a tool_result block carried verbatim, key order included, as Claude
+// Code recorded it (a rewrite reuses the block it sent, which a prompt-cache match
+// depends on). It marshals as the bytes it holds.
+type RawBlock json.RawMessage
+
+func (r RawBlock) MarshalJSON() ([]byte, error) { return json.RawMessage(r).MarshalJSON() }
+
 // ToolResultBlock content is a string or a []Block.
 type ToolResultBlock struct {
 	Type      string `json:"type"`
@@ -118,6 +125,7 @@ type ImageBlock struct {
 	Source ImageSource `json:"source"`
 }
 
+func (RawBlock) blockType() string        { return "tool_result" }
 func (TextBlock) blockType() string       { return "text" }
 func (ThinkingBlock) blockType() string   { return "thinking" }
 func (ToolUseBlock) blockType() string    { return "tool_use" }

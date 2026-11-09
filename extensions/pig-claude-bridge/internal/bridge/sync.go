@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/balcsida/pig-claude-bridge/extensions/pig-claude-bridge/internal/ccsession"
@@ -153,31 +152,11 @@ func (b *Bridge) readCarriedAttachments(sessionID, cwd string) []convert.Carried
 
 // convertAndImportMessages converts pi messages and writes them into session.
 func (b *Bridge) convertAndImportMessages(session *ccsession.Session, messages []map[string]any, custom map[string]string, carried []convert.CarriedAttachment) error {
-	anthropic, sanitized, dropped, err := convert.ConvertPiMessages(messages, custom)
+	anthropic, sanitized, _, err := convert.ConvertPiMessages(messages, custom, nil)
 	if err != nil {
 		return fmt.Errorf("convert pi messages: %w", err)
 	}
 	b.debugf("convertAndImportMessages: %d pi msgs → %d anthropic msgs", len(messages), len(anthropic))
-	var parts []string
-	if dropped.Thinking > 0 {
-		providers := append([]string(nil), dropped.Providers...)
-		sort.Strings(providers)
-		parts = append(parts, fmt.Sprintf("%d thinking (%s)", dropped.Thinking, strings.Join(providers, ", ")))
-	}
-	if dropped.AbortedTurns > 0 {
-		parts = append(parts, fmt.Sprintf("%d aborted turn(s)", dropped.AbortedTurns))
-	}
-	types := make([]string, 0, len(dropped.Other))
-	for t := range dropped.Other {
-		types = append(types, t)
-	}
-	sort.Strings(types)
-	for _, t := range types {
-		parts = append(parts, fmt.Sprintf("%d %s", dropped.Other[t], t))
-	}
-	if len(parts) > 0 {
-		b.debugf("convertAndImportMessages: dropped %s", strings.Join(parts, ", "))
-	}
 	if len(sanitized) > 0 {
 		b.debugf("convertAndImportMessages: sanitized %d tool IDs", len(sanitized))
 	}
