@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-10
+
 - feat(models): Claude Fable 5.2 (`claude-fable-5-2`) is in the model list with 1M context, taken from Claude Code 2.1.321's catalog. pi-ai does not ship it yet, so it lives in `internal/models/pending.go`, appended to the generated catalog; a test fails once a regenerated catalog carries it. The catalog itself is regenerated from `@earendil-works/pi-ai` 1.5.0 (port-only).
 - ci: the release workflow no longer passes an `NPM_TOKEN` secret to `npm publish`. The package publishes through npm trusted publishing (OIDC); the secret was never set, so the variable came through empty.
 
