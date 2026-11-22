@@ -192,6 +192,10 @@ func Extension() *sdk.Extension {
 			func(ctx sdk.Context) bridge.Host { return sdkHost{ctx} }, requestContext))
 	}
 
+	for _, name := range cfg.Provider.WebToolNames() {
+		ext.RegisterTool(webToolDefinition(b, name))
+	}
+
 	ext.OnSessionStart(func(ctx sdk.Context, data map[string]any) (any, error) {
 		defer func() { _ = recover() }()
 		reason, _ := data["reason"].(string)

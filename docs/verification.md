@@ -42,6 +42,26 @@ the rebuild, attachment and parallel-result live tests that `tests/live` also ru
   result and "(<tool> completed with no output)" otherwise, the placeholders the import writes) and
   `TestForkSessionAndSessionIDFlags` (`--fork-session --resume-session-at <uuid> --session-id <new>` runs as the new
   session, carries the forked-at record and the source conversation; `--session-id` alone names a fresh launch).
+- 2026-11-22, claude 2.1.330, the three `provider.webTools` contract tests passed:
+  - `TestWebToolsRunInsideClaudeCodeBesideAServedTool`: with `--tools=WebSearch,WebFetch` beside the served MCP tool,
+    `init.tools` is `[WebFetch WebSearch mcp__custom-tools__alpha]`; a `WebFetch` call is answered by Claude Code with a
+    `tool_result` user frame (string content, never dispatched to our server) and the answer follows as a later
+    assistant message before the one `result`.
+  - `TestAWebCallBeforeAnMcpCallIsAnsweredWhileTheMcpCallIsParked`: one message holding `WebFetch` then `alpha`;
+    Claude Code answered the web call (4.7 s) and only then called `alpha`, which the test kept parked until 20 s.
+  - `TestAWebCallAfterAnMcpCallIsNotStartedUntilTheMcpCallReturns`: the same message in the other order; Claude Code
+    parked on `alpha` and answered the web call only after its release. Both skip when the model does not put the two
+    calls in one message in the asked order.
+  - Both web tools work with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `CLAUDE_CODE_DISABLE_FEATURE_FLAGS=1` set
+    (probed by hand with `claude -p`).
+- 2026-11-22: `TestIntWebTools` (tests/live) passed: PiG runs its `WebFetch` tool once and gets Claude Code's result,
+  the second turn's sync path is `reuse`, and after a model switch the path is `rebuild` and the new session file
+  holds the `WebFetch` call and its result. `TestIntWebSearch` passed too: PiG runs its `WebSearch` tool once, the
+  result is Claude Code's (`Web search results for query: ...` and the links), and the second turn's sync path is
+  `reuse`. `TestIntWebToolsOnAnotherProvider` was skipped (no alternative provider
+  in the environment); its logic is covered by the unit test `TestWebToolsAnswerOnlyOnClaudeBridgeModels` only. Run
+  once by hand and not kept as tests: a message with `WebFetch` then `read` (PiG ran both, 5 messages recorded, next
+  turn `reuse`) and one with `read` then `WebFetch` (PiG ran `read` only, next turn `reuse`).
 - Not covered (as in TypeScript): `DISABLE_AUTO_COMPACT`, steer draining at tool boundaries, `rate_limit_event`
   shape; `updatedInput` on allow cannot be expressed through the client (it answers `can_use_tool` with the
   "not provided" error).

@@ -192,7 +192,11 @@ func (b *Bridge) streamSimple(ctx context.Context, host Host, model, piContext, 
 		}
 		b.claimCurrentPiStream(stream, "tool-result", resultCtx)
 		resultCtx.resetTurnState(model)
+		// Web tool results are Claude Code's own: nothing to deliver. With the stream
+		// attached and the turn reset, the message it wrote meanwhile can flow.
+		allResults = b.takeWebResults(resultCtx, allResults)
 		resultCtx.mu.Lock()
+		resultCtx.releaseHoldLocked()
 		bind := resultCtx.bindRunSignal
 		resultCtx.mu.Unlock()
 		if bind != nil {
@@ -249,7 +253,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 	options map[string]any, piSessionID string, unparkedToolResult, rewrittenUnderQuery bool) *sdk.ModelEventStream {
 	// Resolved first: an unaccountable system prompt fails this query before anything
 	// is claimed or reset, leaving no half-built query behind.
-	mcpTools, customToolNameToSdk, customToolNameToPi := resolveMcpTools(piContext, b.askClaudeToolName())
+	mcpTools, builtinTools, customToolNameToSdk, customToolNameToPi := resolveMcpTools(piContext, b.askClaudeToolName(), b.deps.Config.Provider.WebToolNames())
 	readTool := "none"
 	for _, tool := range mcpTools {
 		if tool["name"] == "read" {
@@ -430,7 +434,7 @@ func (b *Bridge) freshQuery(ctx context.Context, host Host, stream *sdk.ModelEve
 		// trusts the workspace when it isn't interactive, so they would run with no prompt.
 		// ~/.claude/settings.json still loads: Bedrock/Vertex users keep env and apiKeyHelper there.
 		SettingSourcesSet: true, SettingSources: []string{"user"},
-		Tools: []string{}, ToolsSet: true, PermissionMode: "bypassPermissions", IncludePartialMessages: true,
+		Tools: builtinTools, ToolsSet: true, PermissionMode: "bypassPermissions", IncludePartialMessages: true,
 		Settings: settings, DebugFile: debugFile, AppendSystemPrompt: systemPromptAppend, ExtraArgs: extraArgs,
 	}
 	if syncResult.ForkAt != "" {

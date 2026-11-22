@@ -91,6 +91,7 @@ The extension asks PiG for the directory; nothing is hard-coded. A missing or un
 - `forceTwoHundredK`: array of model ids to pin to 200K context (bare id, no `[1m]` suffix). Use if the catalog declares a model at 1M but Claude Code won't serve it on your plan.
 - `strictMcpConfig`: block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled`: enable Claude Code's auto-memory system (default `false`)
+- `webTools` (default `false`): give the model Claude Code's own `WebSearch` and `WebFetch`. Claude Code runs the call itself; PiG shows it as a call of a PiG tool of the same name, which the extension registers and which returns Claude Code's result. The call and its result are ordinary messages in PiG's history, so they survive a session the bridge rebuilds from it. Three limits: PiG's tool hooks see the call but cannot stop it, since Claude Code has already started it; a web call that follows a PiG tool call in the same model message stays inside Claude Code and PiG shows only the answer; and on a model of another provider the tools return an error (`WebSearch is only available on claude-bridge models`). No other Claude Code tool can be turned on.
 - `pathToClaudeCodeExecutable`: path to the `claude` binary, used instead of the one on `PATH`. A path ending in `.js`, `.mjs` or `.ts` is run through `node`, as the Agent SDK does.
 
 **Notices:** the startup notice, shown at the first bridge turn in the TUI only (it stays pending in RPC, JSON and print mode), points out when `provider.plan` is unset and was not detected, and records `startupNoticeShown` (a date) in the global config. A deprecation notice on first use of AskClaude records its display date as `askClaudeDeprecationShown`. The extension rewrites the global file only to add these keys and leaves every other key as it was; an unparseable global file is left alone.
@@ -114,7 +115,7 @@ Offline, quota-free:
 cd extensions/pig-claude-bridge && gofmt -l . && go vet ./... && go test -race ./...
 ```
 
-Live tests spawn real `pig` and Claude Code processes and spend a little quota; run them by hand, never in CI. Claude Code must be logged in (`claude` on `PATH`, the real `~/.claude`, which must be writable: a sandbox that blocks it makes `--resume` fail with `No conversation found with session ID`). Every live run uses a fresh `PIG_HOME`/`PIG_CODING_AGENT_DIR`, so the alternative provider for the AskClaude, image and session-resume checks must be exported in your shell, together with that provider's API-key variable:
+Live tests spawn real `pig` and Claude Code processes and spend a little quota; run them by hand, never in CI. Claude Code must be logged in (`claude` on `PATH`, the real `~/.claude`, which must be writable: a sandbox that blocks it makes `--resume` fail with `No conversation found with session ID`). Every live run uses a fresh `PIG_HOME`/`PIG_CODING_AGENT_DIR`, so the alternative provider for the AskClaude, image, session-resume and web-tools checks must be exported in your shell, together with that provider's API-key variable:
 
 ```sh
 export CLAUDE_BRIDGE_TESTING_ALT_PROVIDER=<provider>

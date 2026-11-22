@@ -584,6 +584,14 @@ func TestStreamSimpleOptionsVariants(t *testing.T) {
 			t.Fatalf("options = %+v", o)
 		}
 	})
+	t.Run("webTools hands Claude Code its web tools, and only the ones pi offers", func(t *testing.T) {
+		h := newProviderHarness(t, webToolsOn)
+		h.script(answers("cc-web", "ok"))
+		finalOf(t, h.call(context.Background(), "pi-web", msgs(userMsg("hi")), readTool, webFetchTool))
+		if o := h.lastSpawn().opts; !o.ToolsSet || !reflect.DeepEqual(o.Tools, []string{"WebFetch"}) {
+			t.Fatalf("tools = %v (set=%t)", o.Tools, o.ToolsSet)
+		}
+	})
 	t.Run("the session the sync resumes is passed to Claude Code", func(t *testing.T) {
 		h := newProviderHarness(t, nil)
 		h.script(answers("cc-first", "one"))

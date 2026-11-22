@@ -1449,7 +1449,7 @@ func TestResolveMcpTools(t *testing.T) {
 		map[string]any{"name": "Read", "description": "r"},
 		map[string]any{"name": "bash", "description": "b"},
 	}}
-	tools, toSDK, toPi := resolveMcpTools(context, "bash")
+	tools, _, toSDK, toPi := resolveMcpTools(context, "bash", nil)
 	if len(tools) != 1 || tools[0]["name"] != "Read" {
 		t.Fatalf("tools = %v", tools)
 	}
@@ -1458,7 +1458,7 @@ func TestResolveMcpTools(t *testing.T) {
 	if !reflect.DeepEqual(toSDK, wantSDK) || !reflect.DeepEqual(toPi, wantPi) {
 		t.Fatalf("maps = %v / %v", toSDK, toPi)
 	}
-	if tools, _, _ := resolveMcpTools(map[string]any{}, ""); len(tools) != 0 {
+	if tools, _, _, _ := resolveMcpTools(map[string]any{}, "", nil); len(tools) != 0 {
 		t.Fatalf("tools = %v", tools)
 	}
 }

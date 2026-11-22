@@ -28,9 +28,11 @@ func SanitizeToolID(id string) string {
 
 // MapPiToolNameToSdk names a pi tool as a rebuilt transcript has to call it.
 //
-// The provider runs Claude Code with no builtin tools, so every callable tool is a
-// pi tool served as mcp__custom-tools__<name>, and custom carries the served
-// tool's exact casing. A name it lacks is a tool pi ran that is not served now;
+// The provider runs Claude Code with no builtin tools, so a tool pi calls is a pi
+// tool served as mcp__custom-tools__<name>, and custom carries the served tool's
+// exact casing. The one exception is a web tool of provider.webTools, which Claude
+// Code runs under its own name: custom maps it to itself while it is on. A name
+// custom lacks is a tool pi ran that is not served now;
 // naming it after a Claude Code builtin would announce a tool the model cannot
 // call (the phantom-call deadlock), so it gets the MCP prefix. A nil map is an
 // empty one.
