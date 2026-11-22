@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-22
+
 - feat(models): Claude Mythos 5.2 (`claude-mythos-5-2`) and Mythos 5.1 (`claude-mythos-5-1`) are in the model list with 1M context, after the Fable family. They come from Claude Code 2.1.328's catalog and live in `internal/models/pending.go`, since pi-ai (checked up to 1.5.2) does not ship them. Both answered a live probe, bare and with `[1m]`; `claude-mythos-5` was refused on the probing account and is not listed. Claude Code serves Mythos only to accounts approved for it.
 - feat(provider): `provider.webTools` (default `false`) gives the model Claude Code's own `WebSearch` and `WebFetch`. The extension registers PiG tools of the same names and starts Claude Code with `--tools` set to the ones PiG offers; Claude Code runs a call itself, and the PiG tool returns its result, so PiG renders and records an ordinary tool call that a rebuilt session carries. The frame loop holds Claude Code's next message until PiG has handed the result back. A web call behind a PiG tool call in the same message stays inside Claude Code (it parks on the MCP call first, and PiG answers only when all its tools are done). On another provider's model the tools answer `<name> is only available on claude-bridge models`. No other builtin can be enabled. Pinned live against Claude Code 2.1.330 by three contract tests (`TestWebToolsRunInsideClaudeCodeBesideAServedTool`, `TestAWebCallBeforeAnMcpCallIsAnsweredWhileTheMcpCallIsParked`, `TestAWebCallAfterAnMcpCallIsNotStartedUntilTheMcpCallReturns`) and `TestIntWebTools` and `TestIntWebSearch` (PiG end to end).
+- docs(verification): the live contract tests pass unchanged against Claude Code 2.1.327; no bridge change was needed.
 
 ## 0.6.0 - 2026-11-10
 

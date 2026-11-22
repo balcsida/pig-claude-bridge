@@ -42,6 +42,10 @@ the rebuild, attachment and parallel-result live tests that `tests/live` also ru
   result and "(<tool> completed with no output)" otherwise, the placeholders the import writes) and
   `TestForkSessionAndSessionIDFlags` (`--fork-session --resume-session-at <uuid> --session-id <new>` runs as the new
   session, carries the forked-at record and the source conversation; `--session-id` alone names a fresh launch).
+- Re-run on 2026-11-18 against claude 2.1.327: the whole package passed unchanged, all 36 live tests (contract,
+  rebuild, attachment and parallel-result). The CLI's MCP `clientInfo.version` is `2.1.327`. Agent SDK 0.3.327
+  against 0.3.310 adds nothing the bridge uses: `mcpServersDelivery` does not cover in-process servers, and the new
+  `session_writes_lost` system message (disk full or over quota at exit) is ignored like any other system subtype.
 - 2026-11-22, claude 2.1.330, the three `provider.webTools` contract tests passed:
   - `TestWebToolsRunInsideClaudeCodeBesideAServedTool`: with `--tools=WebSearch,WebFetch` beside the served MCP tool,
     `init.tools` is `[WebFetch WebSearch mcp__custom-tools__alpha]`; a `WebFetch` call is answered by Claude Code with a
