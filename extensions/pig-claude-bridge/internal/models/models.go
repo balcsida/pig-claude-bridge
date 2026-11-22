@@ -37,7 +37,7 @@ type RuntimeModel struct {
 var datedAlias = regexp.MustCompile(`-20\d{6}$`)
 
 // familyOrder is the display tier: flagship families first, unknown families last.
-var familyOrder = []string{"fable", "opus", "sonnet", "haiku"}
+var familyOrder = []string{"fable", "mythos", "opus", "sonnet", "haiku"}
 
 // measuredOneM holds the [1m] ids verified to serve 1M on every plan. A new
 // model serves 200K until someone measures it and adds it here. Known
@@ -47,6 +47,9 @@ var measuredOneM = map[string]bool{
 	"claude-fable-5":   true,
 	"claude-fable-5-1": true,
 	"claude-fable-5-2": true, // native_1m in Claude Code 2.1.321's catalog
+	// [1m] probed live on Claude Code 2.1.328: both report contextWindow 1000000.
+	"claude-mythos-5-2": true,
+	"claude-mythos-5-1": true,
 
 	"claude-opus-5-5":   true,
 	"claude-opus-5":     true,

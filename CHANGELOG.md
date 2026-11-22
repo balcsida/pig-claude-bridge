@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat(models): Claude Mythos 5.2 (`claude-mythos-5-2`) and Mythos 5.1 (`claude-mythos-5-1`) are in the model list with 1M context, after the Fable family. They come from Claude Code 2.1.328's catalog and live in `internal/models/pending.go`, since pi-ai (checked up to 1.5.2) does not ship them. Both answered a live probe, bare and with `[1m]`; `claude-mythos-5` was refused on the probing account and is not listed. Claude Code serves Mythos only to accounts approved for it.
+
 ## 0.6.0 - 2026-11-10
 
 - feat(models): Claude Fable 5.2 (`claude-fable-5-2`) is in the model list with 1M context, taken from Claude Code 2.1.321's catalog. pi-ai does not ship it yet, so it lives in `internal/models/pending.go`, appended to the generated catalog; a test fails once a regenerated catalog carries it. The catalog itself is regenerated from `@earendil-works/pi-ai` 1.5.0 (port-only).
