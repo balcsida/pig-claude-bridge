@@ -185,9 +185,12 @@ func (b *Bridge) finalizeCurrentStream(q *QueryContext, stopReason string) {
 }
 
 // endOnToolUseLocked ends the pi stream on a completed tool call; the MCP handler
-// blocks Claude Code until pi delivers the result on its next call. The caller holds q.mu.
+// blocks Claude Code until pi delivers the result on its next call. A web call is
+// registered first, so the pi tool that waits for Claude Code's answer finds it.
+// The caller holds q.mu.
 func (b *Bridge) endOnToolUseLocked(q *QueryContext) {
 	q.turnOutput["stopReason"] = "toolUse"
+	b.expectWebCallsLocked(q)
 	b.recordAssistantEmissionLocked(q)
 	q.endStreamLocked(map[string]any{"type": "done", "reason": "toolUse", "message": deepCopy(q.turnOutput)})
 }
@@ -272,9 +275,9 @@ func (b *Bridge) processStreamEvent(q *QueryContext, frame map[string]any) {
 		case "thinking":
 			q.emitLocked("thinking_start", q.addBlockLocked(withIndex(map[string]any{"type": "thinking", "thinking": "", "thinkingSignature": ""}, event)), nil)
 		case "tool_use":
-			piName, ok := piToolNameFor(str(cb["name"]), q.customToolNameToPi)
+			piName, ok := q.piToolNameLocked(q.turnStreamMessageID, cb)
 			if !ok {
-				b.debugf("processStreamEvent: skipping tool_use for unserved tool %s [%s] — CC rejects it and retries", str(cb["name"]), str(cb["id"]))
+				b.debugf("processStreamEvent: skipping tool_use for %s [%s], not shown to pi: CC rejects it and retries, or runs it itself (a web call after a pi tool call)", str(cb["name"]), str(cb["id"]))
 				return
 			}
 			q.turnToolCallIDs = append(q.turnToolCallIDs, str(cb["id"]))
@@ -538,9 +541,9 @@ func (b *Bridge) processAssistantMessage(q *QueryContext, frame map[string]any) 
 			}
 			q.emitLocked("thinking_end", idx, map[string]any{"content": thinking})
 		case "tool_use":
-			piName, ok := piToolNameFor(str(block["name"]), q.customToolNameToPi)
+			piName, ok := q.piToolNameLocked(id, block)
 			if !ok {
-				b.debugf("processAssistantMessage: skipping tool_use for unserved tool %s [%s] — CC rejects it and retries", str(block["name"]), str(block["id"]))
+				b.debugf("processAssistantMessage: skipping tool_use for %s [%s], not shown to pi: CC rejects it and retries, or runs it itself (a web call after a pi tool call)", str(block["name"]), str(block["id"]))
 				continue
 			}
 			q.ensureTurnStartedLocked()

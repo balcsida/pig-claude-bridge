@@ -97,7 +97,7 @@ func (b *Bridge) tapRecording(q *QueryContext, frame map[string]any) {
 		case "thinking":
 			step.content = append(step.content, map[string]any{"type": "thinking", "thinking": block["thinking"], "thinkingSignature": block["signature"]})
 		case "tool_use":
-			if name, ok := piToolNameFor(str(block["name"]), q.customToolNameToPi); ok {
+			if name, ok := q.piToolNameLocked(id, block); ok {
 				step.content = append(step.content, map[string]any{"type": "toolCall", "id": block["id"], "name": name, "arguments": mapToolArgs(name, obj(block["input"]))})
 			}
 		}

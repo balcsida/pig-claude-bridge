@@ -211,3 +211,21 @@ func TestLoadFailsClosedForMistypedModeGates(t *testing.T) {
 		})
 	}
 }
+
+func TestWebToolNamesAreOnlyTheWebToolsAndOnlyWhenAsked(t *testing.T) {
+	var none *ProviderConfig
+	for name, p := range map[string]*ProviderConfig{"nil": none, "unset": {}, "false": {WebTools: ptr(false)}} {
+		if got := p.WebToolNames(); len(got) != 0 {
+			t.Errorf("%s: WebToolNames() = %#v", name, got)
+		}
+	}
+	agentDir := t.TempDir()
+	write(t, GlobalConfigPath(agentDir), `{"provider":{"webTools":true}}`)
+	if got := Load(agentDir).Provider.WebToolNames(); !reflect.DeepEqual(got, []string{"WebSearch", "WebFetch"}) {
+		t.Fatalf("WebToolNames() = %v", got)
+	}
+	write(t, GlobalConfigPath(agentDir), `{"provider":{"webTools":"yes"}}`)
+	if got := Load(agentDir).Provider.WebToolNames(); len(got) != 0 {
+		t.Fatalf("a mistyped webTools turned tools on: %v", got)
+	}
+}

@@ -57,6 +57,10 @@ type Bridge struct {
 	syncLocks map[string]*sync.Mutex
 	// historyRewritten holds the pi session ids pi rewrote (compact, tree) since their last query.
 	historyRewritten map[string]struct{}
+	// webCalls are the web tool calls handed to pi and not handed back yet, by tool
+	// use id. webMu guards it and is taken last: after q.mu, never before it.
+	webMu    sync.Mutex
+	webCalls map[string]*webCall
 	// contexts are the live queries armStaleContexts marks.
 	contexts map[*QueryContext]struct{}
 	// cwds maps a pi session id to its working directory.
@@ -106,6 +110,7 @@ func New(d Deps) *Bridge {
 		syncLocks:        map[string]*sync.Mutex{},
 		historyRewritten: map[string]struct{}{},
 		contexts:         map[*QueryContext]struct{}{},
+		webCalls:         map[string]*webCall{},
 		cwds:             map[string]string{},
 		longContext:      LongContextSettings(d.Config.Provider),
 	}

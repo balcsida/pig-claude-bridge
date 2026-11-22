@@ -54,6 +54,20 @@ type ProviderConfig struct {
 	// ForceTwoHundredK lists model ids whose declared 1M context Claude Code does not
 	// actually serve; they are pinned to the bare id at 200K.
 	ForceTwoHundredK []string `json:"forceTwoHundredK,omitempty"`
+	// WebTools gives the model Claude Code's own WebSearch and WebFetch. Claude Code runs
+	// them itself; PiG sees each call as a call of a PiG tool of the same name, which the
+	// extension registers and which returns what Claude Code answered.
+	WebTools *bool `json:"webTools,omitempty"`
+}
+
+// WebToolNames are the Claude Code tools provider.webTools turns on, empty when it is
+// off. Only the web tools can be: any other builtin (Bash, Edit, ...) would act on the
+// machine before PiG is told of the call.
+func (p *ProviderConfig) WebToolNames() []string {
+	if p != nil && p.WebTools != nil && *p.WebTools {
+		return []string{"WebSearch", "WebFetch"}
+	}
+	return nil
 }
 
 func GlobalConfigPath(agentDir string) string {

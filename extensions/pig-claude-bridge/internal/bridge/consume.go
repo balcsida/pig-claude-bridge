@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -114,13 +115,22 @@ func (c *QueryContext) ownsToolCall(id string) bool {
 
 // resolveMcpTools lists the pi tools to serve over MCP, minus excludeToolName,
 // with the name maps in both directions (each under the exact and the lower-cased
-// SDK name, as Claude sometimes lowercases it).
-func resolveMcpTools(piContext map[string]any, excludeToolName string) (mcpTools []map[string]any, customToolNameToSdk, customToolNameToPi map[string]string) {
-	customToolNameToSdk, customToolNameToPi = map[string]string{}, map[string]string{}
+// SDK name, as Claude sometimes lowercases it). A pi tool named in webTools is not
+// served: it is Claude Code's own tool of that name, listed in builtinTools (never
+// nil) and mapped to itself.
+func resolveMcpTools(piContext map[string]any, excludeToolName string, webTools []string) (mcpTools []map[string]any, builtinTools []string, customToolNameToSdk, customToolNameToPi map[string]string) {
+	builtinTools, customToolNameToSdk, customToolNameToPi = []string{}, map[string]string{}, map[string]string{}
 	for _, raw := range list(piContext["tools"]) {
 		tool := obj(raw)
 		name := str(tool["name"])
 		if tool == nil || name == excludeToolName {
+			continue
+		}
+		if slices.Contains(webTools, name) {
+			builtinTools = append(builtinTools, name)
+			customToolNameToSdk[name] = name
+			customToolNameToSdk[strings.ToLower(name)] = name
+			customToolNameToPi[name] = name
 			continue
 		}
 		sdkName := convert.MCPToolPrefix + name
@@ -130,7 +140,7 @@ func resolveMcpTools(piContext map[string]any, excludeToolName string) (mcpTools
 		customToolNameToPi[sdkName] = name
 		customToolNameToPi[strings.ToLower(sdkName)] = name
 	}
-	return mcpTools, customToolNameToSdk, customToolNameToPi
+	return mcpTools, builtinTools, customToolNameToSdk, customToolNameToPi
 }
 
 // buildMcpServer is the MCP server bridging pi's tools to Claude Code; its tool
@@ -259,7 +269,8 @@ loop:
 			b.debugf("consumeQuery: skipping malformed frame: %v", err)
 			continue
 		}
-		if q.isAbandoned() {
+		b.holdForPi(ctx, q, frame)
+		if ctx.Err() != nil || q.isAbandoned() {
 			break
 		}
 		b.tapRecording(q, frame)
@@ -311,6 +322,9 @@ func (b *Bridge) awaitExit(ctx context.Context, client ccproto.Client) error {
 // consumeFrame handles one frame and reports whether the query is over.
 func (b *Bridge) consumeFrame(host Host, q *QueryContext, frame map[string]any, res *consumeResult) (stop bool) {
 	typ := str(frame["type"])
+	if typ == "user" && topLevel(frame) {
+		b.answerWebCalls(frame)
+	}
 
 	// Lifecycle frames come before the currentPiStream gate: everything below it is
 	// content, which has nowhere to go once a turn ended on a tool call. A replay
@@ -556,6 +570,7 @@ func (b *Bridge) teardownQuery(q *QueryContext, client ccproto.Client, ps *Promp
 	q.mu.Unlock()
 	if own {
 		q.releasePendingToolCalls("Query ended")
+		b.endWebCalls(q, "Claude Code ended before the web tool returned")
 		b.unregisterContext(q)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
@@ -646,6 +661,7 @@ func (b *Bridge) drainForAbort(q *QueryContext) {
 		ps.Fail(errors.New("Operation aborted"))
 	}
 	q.releasePendingToolCalls("Operation aborted")
+	b.endWebCalls(q, "Operation aborted")
 }
 
 // discardRewrittenQuery drops a Claude Code query parked at a tool boundary whose
@@ -669,6 +685,7 @@ func (b *Bridge) discardRewrittenQuery(q *QueryContext, reason string) {
 	q.turnToolCallIDs = []string{}
 	ps := q.promptStream
 	q.promptStream = nil
+	q.releaseHoldLocked()
 	q.mu.Unlock()
 
 	b.mu.Lock()
@@ -685,6 +702,7 @@ func (b *Bridge) discardRewrittenQuery(q *QueryContext, reason string) {
 	// Settle the parked handlers before killing the CLI: one left awaiting a dead
 	// subprocess never settles.
 	q.releasePendingToolCalls(reason)
+	b.endWebCalls(q, reason)
 	b.killClient(discarded)
 	q.mu.Lock()
 	if q.currentPiStream != nil && q.turnOutput != nil {

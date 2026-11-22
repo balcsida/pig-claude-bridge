@@ -436,6 +436,122 @@ func TestToolsEmptyExposesNoBuiltinTools(t *testing.T) {
 	}
 }
 
+// provider.webTools: Claude Code runs its own web tools inside the turn. The bridge maps
+// the frames around the call to one pi message, so it relies on the call being answered
+// by Claude Code (never dispatched to our server) and on the answer following in the same query.
+func TestWebToolsRunInsideClaudeCodeBesideAServedTool(t *testing.T) {
+	srv := &bareServer{tools: []mcpTool{noArgTool("alpha")}}
+	opts := providerOptions(t)
+	opts.Tools = []string{"WebSearch", "WebFetch"}
+	p := startLive(t, opts, srv)
+	o := run(t, p, "Use the WebFetch tool once on https://example.com and reply with the page's heading only. Do not call any other tool.")
+	if got := fmt.Sprint(o.init["tools"]); got != "[WebFetch WebSearch mcp__custom-tools__alpha]" {
+		t.Fatalf("init tools = %v", o.init["tools"])
+	}
+	if calls := srv.callList(); len(calls) != 0 {
+		t.Fatalf("CC dispatched to our server: %v", calls)
+	}
+	if len(o.toolUses) == 0 || o.toolUses[0].Name != "WebFetch" {
+		t.Fatalf("tool uses = %v, want WebFetch first", o.toolUses)
+	}
+	answered := false
+	for _, r := range o.toolResults {
+		if r["tool_use_id"] == o.toolUses[0].ID {
+			answered = r["is_error"] != true
+		}
+	}
+	if !answered {
+		t.Fatalf("CC did not answer its own WebFetch call: %v", o.toolResults)
+	}
+	// The bridge holds the pi stream open across the call: the answer must come as a later
+	// assistant message before the one result frame.
+	if !strings.Contains(assistantText(o), "Example Domain") || at(o.result, "subtype") != "success" {
+		t.Fatalf("text = %q, result = %v", assistantText(o), o.result)
+	}
+}
+
+// webAndMcpInOneMessage asks for one message holding a WebFetch call and a call of the MCP tool alpha, in
+// the asked order, keeps alpha's handler parked for park, and reports when Claude Code answered the
+// WebFetch call relative to alpha's release. It skips when the model did not produce that message.
+func webAndMcpInOneMessage(t *testing.T, webFirst bool, park time.Duration) (webAnswered, alphaReleased time.Duration) {
+	t.Helper()
+	release := make(chan struct{})
+	srv := &bareServer{tools: []mcpTool{noArgTool("alpha")}}
+	srv.respond = func(string) ([]any, bool) {
+		<-release
+		return []any{map[string]any{"type": "text", "text": "alpha-VALUE"}}, false
+	}
+	opts := providerOptions(t)
+	opts.Tools = []string{"WebFetch"}
+	p := startLive(t, opts, srv)
+	order := "first mcp__custom-tools__alpha, then WebFetch on https://example.com with the prompt 'heading'"
+	if webFirst {
+		order = "first WebFetch on https://example.com with the prompt 'heading', then mcp__custom-tools__alpha"
+	}
+	start := time.Now()
+	var mu sync.Mutex
+	timer := time.AfterFunc(park, func() {
+		mu.Lock()
+		alphaReleased = time.Since(start)
+		mu.Unlock()
+		close(release)
+	})
+	t.Cleanup(func() {
+		if timer.Stop() {
+			close(release)
+		}
+	})
+	if err := p.WriteUser(UserMessage{Content: "Make exactly two tool calls in ONE assistant message, in this order: " + order +
+		". Both in the same message, in parallel. Then reply with 'ok'."}); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]string{}   // tool use id -> tool name
+	message := map[string]string{} // tool use id -> API message id
+	var asked []string
+	collect(t, p, func(f map[string]any) bool {
+		blocks, _ := at(f, "message", "content").([]any)
+		for _, b := range blocks {
+			switch id := str(at(b, "id")); {
+			case f["type"] == "assistant" && at(b, "type") == "tool_use":
+				names[id], message[id] = str(at(b, "name")), str(at(f, "message", "id"))
+				asked = append(asked, id)
+			case f["type"] == "user" && at(b, "type") == "tool_result" && names[str(at(b, "tool_use_id"))] == "WebFetch" && webAnswered == 0:
+				webAnswered = time.Since(start)
+			}
+		}
+		return isResult(f)
+	})
+	first, second := "mcp__custom-tools__alpha", "WebFetch"
+	if webFirst {
+		first, second = second, first
+	}
+	if len(asked) != 2 || names[asked[0]] != first || names[asked[1]] != second || message[asked[0]] != message[asked[1]] {
+		t.Skipf("the model did not put %s then %s in one message: %v in %v", first, second, names, message)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return webAnswered, alphaReleased
+}
+
+// provider.webTools shows pi a web call as a tool call, and pi answers only when all its tools of the
+// message are done. That works for a web call ahead of an MCP call: Claude Code answers it without
+// waiting for the MCP call.
+func TestAWebCallBeforeAnMcpCallIsAnsweredWhileTheMcpCallIsParked(t *testing.T) {
+	web, released := webAndMcpInOneMessage(t, true, 20*time.Second)
+	if web == 0 || web >= released {
+		t.Fatalf("WebFetch answered at %v, alpha released at %v: Claude Code waited for the MCP call", web, released)
+	}
+}
+
+// It would deadlock for a web call behind an MCP call: Claude Code parks on the MCP call first. The
+// bridge keeps such a web call from pi for that reason. A failure here means that rule can go.
+func TestAWebCallAfterAnMcpCallIsNotStartedUntilTheMcpCallReturns(t *testing.T) {
+	web, released := webAndMcpInOneMessage(t, false, 12*time.Second)
+	if web == 0 || web < released {
+		t.Fatalf("WebFetch answered at %v, alpha released at %v: Claude Code no longer runs the calls in order", web, released)
+	}
+}
+
 func TestUnservedToolUseIsAnsweredByCCNeverDispatched(t *testing.T) {
 	// Whether the model takes the bait is up to the model: "never dispatched" is asserted unconditionally,
 	// the rejection shape only when the bait was taken.

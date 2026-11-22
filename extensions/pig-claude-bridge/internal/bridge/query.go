@@ -63,6 +63,13 @@ type QueryContext struct {
 	// into a turn, oldest first: CC runs queued input in order.
 	pendingSteerUUIDs []string
 
+	// piToolInMessage are the API message ids that hold a pi tool call, and
+	// hiddenWebCalls the verdict per web tool_use id: true keeps the call inside
+	// Claude Code (piToolNameLocked).
+	piToolInMessage map[string]bool
+	hiddenWebCalls  map[string]bool
+	// hold is closed to wake the frame loop waiting in holdForPi; nil while none waits.
+	hold chan struct{}
 	// recording is this query's live coverage of pi's history.
 	recording *LiveRecording
 	// assistantSteps are the complete SDK blocks keyed by API message id; they survive
@@ -130,6 +137,8 @@ func newQueryContext() *QueryContext {
 		pendingToolCalls: map[string]PendingToolCall{},
 		pendingResults:   map[string]convert.McpResult{},
 		assistantSteps:   map[string]*assistantStep{},
+		piToolInMessage:  map[string]bool{},
+		hiddenWebCalls:   map[string]bool{},
 	}
 	q.recording, _ = NewLiveRecording(nil, nil)
 	return q
